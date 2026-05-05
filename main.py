@@ -2,12 +2,25 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import platform
+import shlex
+import subprocess
 import os
+import random
 import re
+import signal
 import sys
-import textwrap
+import threading
+import time
+import urllib.error
+import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
+
+import utils
+from formatter import TuiFormatter
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, CompleteEvent
@@ -15,37 +28,61 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import CompleteStyle
-from prompt_toolkit.shortcuts import clear
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application.run_in_terminal import run_in_terminal
 
 from ollama import OllamaClient, OllamaConfig
+from utils import VectorMemoryIndex, vectorise_text
 
+from PIL import Image, ImageGrab
 
+VERSION = "0.1.0"
 APP_NAME = "SimpleAgent TUI"
 DEFAULT_MODEL = "nemotron-3-nano:4b"
 DEFAULT_EMBEDDING_MODEL = "ordis/jina-embeddings-v2-base-code:latest"
+DEFAULT_VISION_MODEL = "granite3.2-vision:2b"
 MAX_RECENT_MESSAGES = 2
 MAX_MEMORY_TEXT_LENGTH = 900
 MAX_RELEVANT_MEMORY_ITEMS = 8
+MAX_RELEVANT_ATTACHMENT_ITEMS = 8
+MAX_RELEVANT_WEB_ITEMS = 8
+MAX_ATTACHMENT_CONTEXT_TOKEN_RATIO = 0.40
+MIN_ATTACHMENT_CONTEXT_TOKENS = 1_500
+MAX_ATTACHMENT_CONTEXT_TOKENS = 6_000
+RESERVED_RESPONSE_TOKENS = 1_500
 
 CONFIG_DIR = Path.home() / ".simpleagent-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+
+ATTACHMENTS_DIR = CONFIG_DIR / "attachments"
+
+SUPPORTED_ATTACHMENT_EXTENSIONS = (
+    utils.TEXT_ATTACHMENT_EXTENSIONS
+    | utils.IMAGE_ATTACHMENT_EXTENSIONS
+    | utils.EXCEL_ATTACHMENT_EXTENSIONS
+    | utils.PDF_ATTACHMENT_EXTENSIONS
+    | utils.DOCX_ATTACHMENT_EXTENSIONS
+)
+
+IMAGE_ATTACHMENT_EXTENSIONS = utils.IMAGE_ATTACHMENT_EXTENSIONS
 
 COMMANDS = {
     "/help": "Show this help menu",
     "/model": "Show or change the Ollama chat model",
     "/embedding": "Show or change the Ollama embeddings model",
+    "/vision": "Show or change the Ollama vision model",
+    "/attach": "Attach supported files by path",
+    "/paste": "Paste text or image from the clipboard",
+    "/web": "Load a URL or search and store ranked web context",
     "/models": "List installed Ollama models",
     "/select-model": "Select and persist an installed Ollama chat model",
     "/select-embedding": "Select and persist an installed Ollama embeddings model",
     "/system": "Show or set the system prompt",
     "/system-reset": "Reset the system prompt",
-    "/stream": "Enable streaming",
-    "/no-stream": "Disable streaming",
     "/history": "Show current session history",
-    "/reset": "Clear current session history",
+    "/clear": "Clear current session history",
     "/about": "Show app info",
+    "/version": "Show version",
     "/exit": "Exit app",
     "/quit": "Exit app",
     "/q": "Exit app",
@@ -55,6 +92,10 @@ COMMANDS = {
 COMMAND_USAGE = {
     "/model": "/model <name>",
     "/embedding": "/embedding <name>",
+    "/vision": "/vision <name>",
+    "/attach": "/attach <path...>",
+    "/paste": "/paste",
+    "/web": "/web <url or search query>",
     "/select-model": "/select-model",
     "/select-embedding": "/select-embedding",
     "/system": "/system <prompt>",
@@ -64,19 +105,50 @@ THINK_BLOCK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNOREC
 STREAM_THINK_START = "<think>"
 STREAM_THINK_END = "</think>"
 
+LOADING_FRAMES = [".", "..", "..."]
+
+LOADING_MESSAGES = [
+    "tiny brain doing its best",
+    "thinking with budget neurons",
+    "borrowing wisdom from the void",
+    "trying not to hallucinate",
+    "counting tokens on fingers",
+    "summoning tiny reasoning goblins",
+    "spinning the hamster wheel",
+    "pretending to be Claude Code",
+    "doing mental push-ups",
+    "upgrading from potato mode",
+    "duct-taping logic together",
+    "asking the small brain council",
+    "adding extra cope tokens",
+    "summoning one more brain cell",
+    "running inference on vibes",
+    "trying to sound expensive",
+    "doing PhD work",
+    "manifesting intelligence",
+    "budget brain entering flow state",
+    "aura farming",
+    "thinking very hard, please clap",
+    "counting tokens on fingers",
+    "running on compact wisdom",
+    "squinting at the prompt",
+    "work work ship ship",
+]
+
 def command_preview(command: str, description: str) -> str:
     usage = COMMAND_USAGE.get(command, command)
     return f"{usage} — {description}"
 
-MASCOT = r"""
-          ╭─────┴─────╮
-         ╭┤  ◉     ◉  ├╮
-         ││     ▾     ││
-         ╰┤  ╰─────╯  ├╯
-           ╰─────────╯
+BOLD = "\033[1m"
+RESET = "\033[0m"
 
-          Simple Agent
-"""
+MASCOT_LINES = [
+    f"  ▗▄▄▄▄▄▄▖    {BOLD}SimpleAgent TUI{RESET} v{VERSION}",
+    " ▐▌> ██ <▐▌   Tiny local AI for tiny machines",
+    " ▐▌   ▾  ▐▌   Work work · ship ship",
+    "  ▝▀▛██▜▀▘    by Weiren.Ong, 2026",
+    "    ▘  ▝      ",
+]
 
 
 def build_help_text() -> str:
@@ -90,6 +162,8 @@ def build_help_text() -> str:
         "",
         "Normal usage:",
         "  Type anything and press Enter to chat with the model.",
+        "  Press Shift+Enter to add a new line where supported.",
+        "  Fallback: press Esc then Enter to add a new line.",
         "  Type / to open command suggestions.",
     ])
 
@@ -147,20 +221,37 @@ def save_config(config: dict) -> None:
         json.dump(config, file, indent=2)
 
 
-class SimpleAgentTUI:
+class SimpleAgentTUI(TuiFormatter):
     def __init__(self) -> None:
         self.config = load_config()
         self.model = os.getenv("SIMPLEAGENT_MODEL") or self.config.get("model", DEFAULT_MODEL)
         self.host = os.getenv("OLLAMA_HOST") or self.config.get("host", "http://localhost:11434")
-        self.stream = True
         self.embedding_model = self.config.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+        self.vision_model = self.config.get("vision_model", DEFAULT_VISION_MODEL)
         self.system_prompt = self.config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
         self.messages: list[dict[str, str]] = []
         self.memory_items: list[dict] = []
+        self.memory_index = VectorMemoryIndex(embedding_key="embedding")
+        self.attachments: list[dict[str, str]] = []
+        self.attachment_context_items: list[dict] = []
+        self.image_attachment_context_items: list[dict] = []
+        self.text_attachment_full_context_items: list[dict] = []
+        self.attachment_index = VectorMemoryIndex(embedding_key="embedding")
+        self.web_context_items: list[dict] = []
+        self.web_sources: list[dict[str, str]] = []
+        self.web_index = VectorMemoryIndex(embedding_key="embedding")
+        self.next_input_prefill: str = ""
         self.last_thinking: str = ""
         self.last_visible_reply: str = ""
         self.show_thinking: bool = False
         self.is_streaming_response: bool = False
+        self.loading_active: bool = False
+        self.loading_thread: threading.Thread | None = None
+        self.loading_lock = threading.Lock()
+
+        self.model_num_context: int | None = None
+        self.embedding_model_num_context: int | None = None
+        self.vision_model_num_context: int | None = None
 
         self.key_bindings = KeyBindings()
 
@@ -171,7 +262,27 @@ class SimpleAgentTUI:
             buffer.start_completion(select_first=False)
             event.app.invalidate()
 
-        @self.key_bindings.add("c-o")
+        @self.key_bindings.add("enter")
+        def _(event):
+            event.current_buffer.validate_and_handle()
+
+        # Some modern terminals encode Shift+Enter using CSI-u style escape
+        # sequences. prompt_toolkit does not expose a portable "s-enter" key name,
+        # so bind the common raw sequences directly.
+        @self.key_bindings.add("escape", "[", "1", "3", ";", "2", "u", eager=True)
+        def _(event):
+            event.current_buffer.insert_text("\n")
+
+        @self.key_bindings.add("escape", "[", "2", "7", ";", "2", ";", "1", "3", "~", eager=True)
+        def _(event):
+            event.current_buffer.insert_text("\n")
+
+        # Fallback for terminals that do not send a distinct Shift+Enter.
+        @self.key_bindings.add("escape", "enter")
+        def _(event):
+            event.current_buffer.insert_text("\n")
+
+        @self.key_bindings.add("f1")
         def _(event):
             run_in_terminal(self.toggle_thinking)
             event.app.invalidate()
@@ -182,6 +293,7 @@ class SimpleAgentTUI:
             complete_style=CompleteStyle.COLUMN,
             editing_mode=EditingMode.EMACS,
             key_bindings=self.key_bindings,
+            multiline=True,
             reserve_space_for_menu=3,
             bottom_toolbar=self.get_bottom_toolbar,
         )
@@ -196,6 +308,17 @@ class SimpleAgentTUI:
             )
         )
 
+        self.install_resize_handler()
+
+    def install_resize_handler(self) -> None:
+        if not hasattr(signal, "SIGWINCH"):
+            return
+
+        def _handle_resize(_signum, _frame) -> None:
+            run_in_terminal(self.handle_resize)
+
+        signal.signal(signal.SIGWINCH, _handle_resize)
+
     # -----------------------------
     # App lifecycle
     # -----------------------------
@@ -208,9 +331,12 @@ class SimpleAgentTUI:
             self.print_error("Ollama is not reachable. Start it with: ollama serve")
             return
 
+        self.refresh_model_context_lengths()
         self.print_info("Connected to Ollama.")
-        self.print_info(f"Model: {self.model}")
-        self.print_dim("Type /help for commands. Ctrl-O collapse/expand thinking. Type /exit to quit.\n")
+        self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
+        self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
+        self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
+        self.print_dim("Type /help for commands. Type /exit to quit.\n")
 
         while True:
             try:
@@ -246,33 +372,29 @@ class SimpleAgentTUI:
         self.compact_messages()
 
         chat_messages = self.build_chat_messages(user_input)
+        started_at = time.perf_counter()
+        tokens_in = self.estimate_chat_tokens(chat_messages)
 
         print()
         self.print_agent_header()
+        self.start_loading_toolbar()
 
         try:
-            if self.stream:
-                raw_reply = self.stream_chat_reply(chat_messages)
-                assistant_reply = self.extract_and_store_thinking(raw_reply)
-                self.last_visible_reply = assistant_reply
-            else:
-                raw_reply = self.client.chat(
-                    chat_messages,
-                    stream=False,
-                    model=self.model,
-                )
-                assistant_reply = self.extract_and_store_thinking(raw_reply)
-                self.last_visible_reply = assistant_reply
-                self.print_model_reply(assistant_reply)
-                print()
+            raw_reply = self.stream_chat_reply(chat_messages)
+            elapsed_seconds = time.perf_counter() - started_at
+            tokens_out = self.estimate_text_tokens(raw_reply)
+            assistant_reply = self.extract_and_store_thinking(raw_reply)
+            self.last_visible_reply = assistant_reply
 
             self.messages.append(
                 {"role": "assistant", "content": assistant_reply}
             )
             self.compact_messages()
+            self.print_response_stats(elapsed_seconds, tokens_in, tokens_out)
 
         except Exception as exc:
             self.is_streaming_response = False
+            self.stop_loading_toolbar()
             self.print_error(f"Model call failed: {exc}")
             self.messages.pop()
 
@@ -290,6 +412,35 @@ class SimpleAgentTUI:
                         "Compacted older conversation context selected by embeddings. "
                         "Treat this as background memory. The latest user message below is higher priority.\n\n"
                         f"{relevant_memory}"
+                    ),
+                }
+            )
+
+        attachment_context = self.get_attachment_context(user_input)
+        if attachment_context:
+            chat_messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Attachment context. Text/table/document attachments were selected by embeddings. "
+                        "Text-like attachments include both full source text and ranked embedding chunks. "
+                        "Image attachments are included in full because visual descriptions should not be ranked away. "
+                        "The latest user message is still the main task.\n\n"
+                        f"Attachment context:\n{attachment_context}"
+                    ),
+                }
+            )
+
+        web_context = self.get_relevant_web_context(user_input)
+        if web_context:
+            chat_messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Web context selected by embeddings from pages loaded with /web. "
+                        "Use this only when relevant to the latest user message. "
+                        "The latest user message is still the main task.\n\n"
+                        f"Web context:\n{web_context}"
                     ),
                 }
             )
@@ -375,65 +526,627 @@ class SimpleAgentTUI:
         memory_text = f"{role}: {content}"
 
         try:
-            embedding = self.client.embed(memory_text, model=self.embedding_model)
+            embedding = vectorise_text(self.client, memory_text, self.embedding_model)
         except Exception:
             embedding = []
 
-        self.memory_items.append(
-            {
-                "role": role,
-                "content": content,
-                "embedding": embedding,
-            }
+        if not utils.is_embedding_vector(embedding):
+            embedding = []
+
+        stored_item = {
+            "role": role,
+            "content": content,
+            "source_type": "conversation_memory",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "embedding": embedding,
+        }
+
+        self.memory_items.append(stored_item)
+        self.memory_index.add_item(stored_item)
+
+    def get_relevant_web_context(self, query_text: str) -> str:
+        if not self.web_context_items:
+            return ""
+
+        try:
+            query_embedding = vectorise_text(self.client, query_text, self.embedding_model)
+        except Exception:
+            return ""
+
+        if not utils.is_embedding_vector(query_embedding):
+            return ""
+
+        selected_items = self.web_index.search(
+            query_embedding=query_embedding,
+            top_k=MAX_RELEVANT_WEB_ITEMS,
+            min_score=0.05,
         )
+
+        if not selected_items:
+            return ""
+
+        lines: list[str] = []
+
+        for rank, item in enumerate(selected_items, start=1):
+            title = item.get("title") or item.get("source_path") or "web page"
+            source_path = item.get("source_path") or "unknown"
+            chunk_index = item.get("chunk_index", 0)
+            score = float(item.get("similarity_score", 0.0))
+            content = item.get("content", "").strip()
+
+            if not content:
+                continue
+
+            if len(content) > 1_200:
+                content = content[:1_197].rstrip() + "..."
+
+            chunk_kind = item.get("chunk_kind") or "web"
+
+            lines.append(
+                f"--- rank {rank} | score {score:.3f} | {title} | "
+                f"kind {chunk_kind} | chunk {chunk_index} ---\n"
+                f"Source: {source_path}\n{content}"
+            )
+
+        return "\n\n".join(lines)
 
     def get_relevant_memory_context(self, query_text: str) -> str:
         if not self.memory_items:
             return ""
 
         try:
-            query_embedding = self.client.embed(query_text, model=self.embedding_model)
+            query_embedding = vectorise_text(self.client, query_text, self.embedding_model)
         except Exception:
             return ""
 
-        if not query_embedding:
+        if not utils.is_embedding_vector(query_embedding):
             return ""
 
-        scored_items = []
-        for item in self.memory_items:
-            item_embedding = item.get("embedding") or []
-            score = self.cosine_similarity(query_embedding, item_embedding)
-            if score > 0:
-                scored_items.append((score, item))
-
-        scored_items.sort(key=lambda pair: pair[0], reverse=True)
-        selected_items = [item for _, item in scored_items[:MAX_RELEVANT_MEMORY_ITEMS]]
+        selected_items = self.memory_index.search(
+            query_embedding=query_embedding,
+            top_k=MAX_RELEVANT_MEMORY_ITEMS,
+            min_score=0.05,
+        )
 
         if not selected_items:
             return ""
 
         lines = []
-        for item in selected_items:
+        for rank, item in enumerate(selected_items, start=1):
             role = item.get("role", "unknown")
+            score = float(item.get("similarity_score", 0.0))
             content = item.get("content", "").strip()
+
             if len(content) > 700:
                 content = content[:697].rstrip() + "..."
-            lines.append(f"- {role}: {content}")
+
+            lines.append(f"- rank {rank} | score {score:.3f} | {role}: {content}")
 
         return "\n".join(lines)
 
-    def cosine_similarity(self, left: list[float], right: list[float]) -> float:
-        if not left or not right or len(left) != len(right):
-            return 0.0
+    def get_relevant_attachment_context(self, query_text: str) -> str:
+        if not self.attachment_context_items:
+            return ""
 
-        dot = sum(a * b for a, b in zip(left, right))
-        left_norm = sum(a * a for a in left) ** 0.5
-        right_norm = sum(b * b for b in right) ** 0.5
+        try:
+            query_embedding = vectorise_text(self.client, query_text, self.embedding_model)
+        except Exception:
+            return ""
 
-        if left_norm == 0 or right_norm == 0:
-            return 0.0
+        if not utils.is_embedding_vector(query_embedding):
+            return ""
 
-        return dot / (left_norm * right_norm)
+        selected_items = self.attachment_index.search(
+            query_embedding=query_embedding,
+            top_k=MAX_RELEVANT_ATTACHMENT_ITEMS,
+            min_score=0.05,
+        )
+
+        if not selected_items:
+            return ""
+
+        lines: list[str] = []
+        for rank, item in enumerate(selected_items, start=1):
+            title = item.get("title") or item.get("filename") or "attachment"
+            chunk_index = item.get("chunk_index", 0)
+            score = float(item.get("similarity_score", 0.0))
+            content = item.get("content", "").strip()
+
+            if not content:
+                continue
+
+            if len(content) > 1_200:
+                content = content[:1_197].rstrip() + "..."
+
+            extension = item.get("extension") or "unknown"
+            mime_type = item.get("mime_type") or "unknown"
+            chunk_kind = item.get("chunk_kind") or "unknown"
+
+            lines.append(
+                f"--- rank {rank} | score {score:.3f} | {title} | "
+                f"type {extension} | mime {mime_type} | kind {chunk_kind} | chunk {chunk_index} ---\n{content}"
+            )
+
+        return "\n\n".join(lines)
+
+    def get_attachment_context(self, query_text: str) -> str:
+        """
+        Return attachment context for the current prompt.
+
+        Text/table/document attachments are ranked by embedding relevance.
+        Image attachments are always included in full while attached.
+        """
+        sections: list[str] = []
+
+        image_context = self.get_full_image_attachment_context()
+        if image_context:
+            sections.append(image_context)
+
+        full_text_context = self.get_full_text_attachment_context()
+        if full_text_context:
+            sections.append(full_text_context)
+
+        ranked_context = self.get_relevant_attachment_context(query_text)
+        if ranked_context:
+            sections.append(ranked_context)
+
+        return self.limit_attachment_context("\n\n".join(sections))
+
+    def get_full_image_attachment_context(self) -> str:
+        """
+        Return full context for image attachments.
+
+        Image attachments are not ranked because visual descriptions can lose meaning
+        when partial chunks are selected. While an image is attached, its full metadata
+        and vision description are included in attachment context.
+        """
+        if not self.image_attachment_context_items:
+            return ""
+
+        lines: list[str] = []
+
+        for item in self.image_attachment_context_items:
+            title = item.get("title") or item.get("filename") or "image attachment"
+            content = item.get("content", "").strip()
+
+            if not content:
+                continue
+
+            extension = item.get("extension") or "unknown"
+            mime_type = item.get("mime_type") or "unknown"
+            lines.append(
+                f"--- {title} | type {extension} | mime {mime_type} | image full context ---\n{content}"
+            )
+
+        return "\n\n".join(lines)
+
+    def get_full_text_attachment_context(self) -> str:
+        """
+        Return full source text context for attached text-like files.
+
+        Ranked embedding chunks may duplicate parts of this content; that is intentional.
+        The full file gives complete source-of-truth context, while ranked chunks tell the
+        model which areas are likely most relevant to the current prompt.
+        """
+        if not self.text_attachment_full_context_items:
+            return ""
+
+        lines: list[str] = [
+            "Full text attachment context:",
+            "The full text below is provided as source-of-truth context. Ranked chunks later may duplicate relevant excerpts.",
+        ]
+
+        for item in self.text_attachment_full_context_items:
+            title = item.get("title") or item.get("filename") or "text attachment"
+            extension = item.get("extension") or "unknown"
+            mime_type = item.get("mime_type") or "unknown"
+            content = item.get("content", "").strip()
+
+            if not content:
+                continue
+
+            lines.append(
+                f"--- {title} | type {extension} | mime {mime_type} | full text ---\n"
+                f"```\n{content}\n```"
+            )
+
+        return "\n\n".join(lines)
+
+    def get_attachment_context_token_budget(self) -> int:
+        """
+        Calculate a safe attachment-context budget from the active chat model context length.
+        """
+        if not self.model_num_context:
+            return MIN_ATTACHMENT_CONTEXT_TOKENS
+
+        available_after_response = max(
+            0,
+            self.model_num_context - RESERVED_RESPONSE_TOKENS,
+        )
+
+        budget = int(available_after_response * MAX_ATTACHMENT_CONTEXT_TOKEN_RATIO)
+
+        if self.text_attachment_full_context_items:
+            return max(MIN_ATTACHMENT_CONTEXT_TOKENS, available_after_response)
+
+        return max(
+            MIN_ATTACHMENT_CONTEXT_TOKENS,
+            min(budget, MAX_ATTACHMENT_CONTEXT_TOKENS),
+        )
+
+    def limit_attachment_context(self, context: str) -> str:
+        """
+        Keep injected attachment context inside a safe token budget.
+        """
+        token_budget = self.get_attachment_context_token_budget()
+
+        if self.estimate_text_tokens(context) <= token_budget:
+            return context
+
+        lines = context.splitlines()
+        kept_lines: list[str] = []
+        used_tokens = 0
+
+        for line in lines:
+            line_tokens = self.estimate_text_tokens(line) + 1
+
+            if used_tokens + line_tokens > token_budget:
+                break
+
+            kept_lines.append(line)
+            used_tokens += line_tokens
+
+        return (
+                "\n".join(kept_lines).rstrip()
+                + "\n\n[Attachment context truncated to fit token budget.]"
+        )
+
+    def add_web_context(self, target: str) -> bool:
+        """
+        Load a URL or search query into embedded web context.
+        """
+        target = target.strip()
+        if not target:
+            return False
+
+        if self.is_probable_url(target):
+            url = self.normalise_web_url(target)
+            print()
+            self.print_dim(f"Loading webpage: {url}")
+
+            try:
+                page_text = utils.scrape_url_to_string(url)
+            except Exception as error:
+                self.print_error(f"Could not load webpage {url}: {error}")
+                print()
+                return False
+
+            print()
+
+            stored = self.store_web_text(
+                text=page_text,
+                source_path=url,
+                title=url,
+                source_type="webpage",
+            )
+
+            if stored:
+                self.add_web_source(label=url, source_type="url")
+
+            return stored
+
+        print()
+        self.print_dim(f"Searching DuckDuckGo: {target}")
+
+        try:
+            embedded_items = utils.duckduckgo_search_to_embedded_context_items(
+                client=self.client,
+                query=target,
+                model=self.embedding_model,
+                max_results=5,
+            )
+        except Exception as error:
+            self.print_error(f"Could not search web for '{target}': {error}")
+            print()
+            return False
+
+        stored = self.store_web_context_items(
+            embedded_items=embedded_items,
+            title=f"DuckDuckGo search: {target}",
+        )
+
+        if stored:
+            self.add_web_source(label=target, source_type="search")
+
+        return stored
+
+    def store_web_text(
+            self,
+            text: str,
+            source_path: str,
+            title: str,
+            source_type: str,
+    ) -> bool:
+        """
+        Chunk, embed, and store web text for later prompt retrieval.
+        """
+        text = (text or "").strip()
+
+        if not text:
+            print()
+            self.print_error(f"No readable web content found: {title}")
+            print()
+            return False
+
+        try:
+            context_items = utils.build_context_items_from_text(
+                text=text,
+                source_type=source_type,
+                source_path=source_path,
+                title=title,
+                metadata={
+                    "extension": ".html",
+                    "mime_type": "text/html",
+                },
+            )
+
+            embedded_items = utils.vectorise_context_items(
+                client=self.client,
+                context_items=context_items,
+                model=self.embedding_model,
+            )
+        except Exception as error:
+            print()
+            self.print_error(f"Could not embed web context {title}: {error}")
+            print()
+            return False
+
+        added_count = 0
+
+        for item in embedded_items:
+            stored_item = dict(item)
+            self.web_context_items.append(stored_item)
+
+            if self.web_index.add_item(stored_item):
+                added_count += 1
+
+        if added_count <= 0:
+            print()
+            self.print_error(f"No embeddable web chunks found: {title}")
+            print()
+            return False
+
+        self.print_dim(f"Stored {added_count} web context chunk(s): {title}")
+        self.print_loaded_webpages(embedded_items)
+        print()
+        return True
+
+    def store_web_context_items(self, embedded_items: list[dict], title: str) -> bool:
+        """
+        Store pre-embedded web context items for later prompt retrieval.
+        """
+        added_count = 0
+
+        for item in embedded_items:
+            stored_item = dict(item)
+            self.web_context_items.append(stored_item)
+
+            if self.web_index.add_item(stored_item):
+                added_count += 1
+
+        if added_count <= 0:
+            print()
+            self.print_error(f"No embeddable web chunks found: {title}")
+            print()
+            return False
+
+        self.print_dim(f"Stored {added_count} web context chunk(s): {title}")
+        self.print_loaded_webpages(embedded_items)
+        print()
+        return True
+
+    def print_loaded_webpages(self, embedded_items: list[dict]) -> None:
+        """
+        Print the unique webpages loaded by a /web search.
+        """
+        loaded_pages: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+
+        for item in embedded_items:
+            url = str(item.get("url") or item.get("source_path") or "").strip()
+            if not url or url in seen_urls:
+                continue
+
+            seen_urls.add(url)
+            page_title = str(item.get("title") or url).strip()
+            loaded_pages.append((page_title, url))
+
+        if not loaded_pages:
+            return
+
+        self.print_dim("Loaded webpages:")
+
+        for index, (page_title, url) in enumerate(loaded_pages, start=1):
+            clipped_title = self.clip_text(page_title, 72)
+            clipped_url = self.clip_text(url, 96)
+
+            self.print_dim(f"  {index}. {clipped_title}")
+            self.print_dim(f"     {clipped_url}")
+
+    def add_web_source(self, label: str, source_type: str) -> None:
+        """
+        Track loaded web URLs/searches for the bottom toolbar.
+        """
+        label = label.strip()
+
+        if not label:
+            return
+
+        if any(
+                item.get("label") == label and item.get("source_type") == source_type
+                for item in self.web_sources
+        ):
+            return
+
+        self.web_sources.append(
+            {
+                "label": label,
+                "source_type": source_type,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+
+    def is_probable_url(self, value: str) -> bool:
+        """
+        Return True when input looks like a URL/domain rather than a search query.
+        """
+        value = value.strip()
+
+        if not value or " " in value:
+            return False
+
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        return bool(parsed.netloc and "." in parsed.netloc)
+
+    def normalise_web_url(self, value: str) -> str:
+        value = value.strip()
+
+        if "://" in value:
+            return value
+
+        return f"https://{value}"
+
+    def estimate_chat_tokens(self, messages: list[dict[str, str]]) -> int:
+        # Ollama's Python streaming wrapper currently gives us text chunks here,
+        # not the final prompt_eval_count/eval_count metadata. This is a lightweight
+        # TUI-side approximation so every response still gets useful stats.
+        total = 0
+        for message in messages:
+            role = message.get("role", "")
+            content = message.get("content", "")
+            total += self.estimate_text_tokens(role)
+            total += self.estimate_text_tokens(content)
+            total += 4  # small chat-template overhead per message
+        return total
+
+    def estimate_text_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+
+        # Rough cross-model estimate: words, numbers, punctuation, CJK characters,
+        # and emoji-ish symbols. Not exact BPE tokens, but stable enough for TUI stats.
+        token_like_chunks = re.findall(
+            r"[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\s\w]",
+            text,
+            flags=re.UNICODE,
+        )
+        return len(token_like_chunks)
+
+    def print_response_stats(self, elapsed_seconds: float, tokens_in: int, tokens_out: int) -> None:
+        total_tokens = tokens_in + tokens_out
+        tokens_per_second = tokens_out / elapsed_seconds if elapsed_seconds > 0 else 0.0
+        elapsed_text = self.format_elapsed_time(elapsed_seconds)
+        stats = (
+            f"stats: {elapsed_text} elapsed · "
+            f"~{tokens_in:,} in · ~{tokens_out:,} out · "
+            f"~{total_tokens:,} total · ~{tokens_per_second:.1f} tok/s"
+        )
+        print(self.dim(stats))
+        print()
+
+    def format_elapsed_time(self, seconds: float) -> str:
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+
+        minutes = int(seconds // 60)
+        remaining_seconds = seconds % 60
+        return f"{minutes}m {remaining_seconds:.1f}s"
+
+    def start_loading_toolbar(self) -> None:
+        with self.loading_lock:
+            if self.loading_active:
+                return
+
+            self.loading_active = True
+            self.loading_thread = threading.Thread(
+                target=self.run_loading_toolbar,
+                daemon=True,
+            )
+            self.loading_thread.start()
+
+    def stop_loading_toolbar(self) -> None:
+        with self.loading_lock:
+            self.loading_active = False
+
+        thread = self.loading_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=0.3)
+
+        self.clear_loading_toolbar()
+
+    def run_loading_toolbar(self) -> None:
+        messages = LOADING_MESSAGES.copy()
+        random.shuffle(messages)
+
+        message_index = 0
+        frame_index = 0
+        frame_loop_count = 0
+        frame_loops_per_message = 2
+
+        while True:
+            with self.loading_lock:
+                if not self.loading_active:
+                    break
+
+            if message_index >= len(messages):
+                messages = LOADING_MESSAGES.copy()
+                random.shuffle(messages)
+                message_index = 0
+
+            message = messages[message_index]
+            frame = LOADING_FRAMES[frame_index]
+            self.render_loading_toolbar(f"{message}{frame}")
+
+            frame_index += 1
+            if frame_index >= len(LOADING_FRAMES):
+                frame_index = 0
+                frame_loop_count += 1
+
+                if frame_loop_count >= frame_loops_per_message:
+                    frame_loop_count = 0
+                    message_index += 1
+
+            time.sleep(0.5)
+
+    def render_loading_toolbar(self, text: str) -> None:
+        try:
+            size = os.get_terminal_size()
+            row = size.lines
+            width = max(1, size.columns)
+        except OSError:
+            return
+
+        toolbar_text = f"■ {text}"
+        clipped = self.clip_text(toolbar_text, width - 1)
+
+        sys.stdout.write("\0337")
+        sys.stdout.write(f"\033[{row};1H")
+        sys.stdout.write("\033[2K")
+        sys.stdout.write(self.blue(clipped))
+        sys.stdout.write("\0338")
+        sys.stdout.flush()
+
+    def clear_loading_toolbar(self) -> None:
+        try:
+            row = os.get_terminal_size().lines
+        except OSError:
+            return
+
+        sys.stdout.write("\0337")
+        sys.stdout.write(f"\033[{row};1H")
+        sys.stdout.write("\033[2K")
+        sys.stdout.write("\0338")
+        sys.stdout.flush()
 
     def get_visual_line_count(self, text: str) -> int:
         width = os.get_terminal_size().columns or 88
@@ -471,6 +1184,7 @@ class SimpleAgentTUI:
         pending = ""
         in_thinking = False
         thinking_started = False
+        maybe_thinking_prefix = False
 
         response_stream = self.client.chat(
             chat_messages,
@@ -508,6 +1222,23 @@ class SimpleAgentTUI:
                 start_index = lower_pending.find(STREAM_THINK_START)
 
                 if start_index == -1:
+                    if not thinking_started and not maybe_thinking_prefix:
+                        stripped_pending = pending.lstrip()
+                        leading_whitespace_length = len(pending) - len(stripped_pending)
+
+                        if not stripped_pending:
+                            break
+
+                        if STREAM_THINK_START.startswith(stripped_pending.lower()):
+                            maybe_thinking_prefix = True
+                            break
+
+                        visible_text = pending
+                        self.print_streaming_reply_text(visible_text)
+                        reply_text += visible_text
+                        pending = ""
+                        break
+
                     keep_length = len(STREAM_THINK_START) - 1
 
                     if len(pending) <= keep_length:
@@ -531,6 +1262,7 @@ class SimpleAgentTUI:
                     thinking_started = True
 
                 pending = pending[start_index + len(STREAM_THINK_START):]
+                maybe_thinking_prefix = False
                 in_thinking = True
 
         if pending:
@@ -541,6 +1273,7 @@ class SimpleAgentTUI:
             else:
                 self.print_streaming_reply_text(pending)
                 reply_text += pending
+                pending = ""
 
         thinking = self.normalise_thinking_text(thinking_text)
         visible_reply = reply_text.strip()
@@ -561,6 +1294,7 @@ class SimpleAgentTUI:
             self.streaming_thinking_last_block = ""
             self.streaming_thinking_closed = True
 
+        self.stop_loading_toolbar()
         self.flush_streaming_reply_buffer()
         self.is_streaming_response = False
         print()
@@ -643,7 +1377,7 @@ class SimpleAgentTUI:
         if len(words) > collapse_word_limit and not self.show_thinking:
             preview = " ".join(words[:collapse_word_limit])
             hidden_word_count = len(words[collapse_word_limit:])
-            return f"{preview}\n+ {hidden_word_count} more word(s) (Ctrl-O to expand)"
+            return f"{preview}\n+ {hidden_word_count} more word(s) (F1 to expand)"
 
         return thinking
 
@@ -673,7 +1407,7 @@ class SimpleAgentTUI:
         if thinking_text:
             self.last_thinking = thinking_text
             self.show_thinking = False
-        elif not self.stream:
+        else:
             self.last_thinking = ""
             self.show_thinking = False
 
@@ -694,7 +1428,9 @@ class SimpleAgentTUI:
         if assistant_reply:
             self.print_tui_markdown(assistant_reply)
         else:
+            print()
             self.print_dim("No visible response returned.")
+            print()
 
     def print_thinking_block(self) -> None:
         thinking = self.last_thinking.strip()
@@ -712,8 +1448,10 @@ class SimpleAgentTUI:
         self.clear_screen()
         self.show_landing_page()
         self.print_info("Connected to Ollama.")
-        self.print_info(f"Model: {self.model}")
-        self.print_dim("Type /help for commands. Ctrl-O collapse/expand thinking. Type /exit to quit.\n")
+        self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
+        self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
+        self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
+        self.print_dim("Type /help for commands. F1 to collapse/expand thinking. Type /exit to quit.\n")
 
         self.print_agent_header()
         self.print_model_reply(self.last_visible_reply)
@@ -744,9 +1482,20 @@ class SimpleAgentTUI:
                 self.show_about()
             return True
 
+        if command == "/version":
+            with patch_stdout(raw=True):
+                print()
+                self.print_info(f"Current version: {VERSION}")
+                print()
+            return True
+
         if command == "/model":
             if not arg:
-                self.print_info(f"Current model: {self.model}")
+                if self.model_num_context is None:
+                    self.model_num_context = self.get_ollama_model_num_context(self.model)
+                print()
+                self.print_info(f"Current model: {self.model}{self.format_num_context(self.model_num_context)}")
+                print()
                 return True
 
             self.set_model(arg, persist=True)
@@ -754,10 +1503,48 @@ class SimpleAgentTUI:
 
         if command == "/embedding":
             if not arg:
-                self.print_info(f"Current embeddings model: {self.embedding_model}")
+                if self.embedding_model_num_context is None:
+                    self.embedding_model_num_context = self.get_ollama_model_num_context(self.embedding_model)
+                print()
+                self.print_info(
+                    f"Current embeddings model: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}"
+                )
+                print()
                 return True
 
             self.set_embedding_model(arg, persist=True)
+            return True
+
+        if command == "/vision":
+            if not arg:
+                if self.vision_model_num_context is None:
+                    self.vision_model_num_context = self.get_ollama_model_num_context(self.vision_model)
+                print()
+                self.print_info(
+                    f"Current vision model: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}"
+                )
+                print()
+                return True
+
+            self.set_vision_model(arg, persist=True)
+            return True
+
+        if command == "/attach":
+            self.handle_attach_command(arg)
+            return True
+
+        if command == "/paste":
+            self.handle_paste_command()
+            return True
+
+        if command == "/web":
+            target = arg.strip()
+            if not target:
+                self.print_error("Usage: /web <url or search query>")
+                return True
+
+            self.add_web_context(target)
+            self.session.app.invalidate()
             return True
 
         if command == "/models":
@@ -770,16 +1557,6 @@ class SimpleAgentTUI:
 
         if command == "/select-embedding":
             self.select_embedding_model()
-            return True
-
-        if command == "/stream":
-            self.stream = True
-            self.print_info("Streaming enabled.")
-            return True
-
-        if command == "/no-stream":
-            self.stream = False
-            self.print_info("Streaming disabled.")
             return True
 
         if command == "/system":
@@ -807,9 +1584,16 @@ class SimpleAgentTUI:
                 self.show_history()
             return True
 
-        if command == "/reset":
+        if command == "/clear":
             self.messages.clear()
             self.memory_items.clear()
+            self.memory_index.clear()
+            self.attachment_context_items.clear()
+            self.image_attachment_context_items.clear()
+            self.text_attachment_full_context_items.clear()
+            self.web_context_items.clear()
+            self.web_sources.clear()
+            self.web_index.clear()
             self.last_thinking = ""
             self.last_visible_reply = ""
             self.show_thinking = False
@@ -817,19 +1601,26 @@ class SimpleAgentTUI:
             self.streaming_thinking_last_block = ""
             self.streaming_thinking_closed = True
             self.reset_streaming_reply_buffer()
+            self.delete_attachment_files()
+            self.attachments.clear()
+            self.next_input_prefill = ""
 
             with patch_stdout(raw=True):
                 self.clear_screen()
                 self.show_landing_page()
                 self.print_info("Connected to Ollama.")
-                self.print_info(f"Model: {self.model}")
-                self.print_dim("Type /help for commands. Ctrl-O collapse/expand thinking. Type /exit to quit.\n")
-                self.print_info("Session history and screen cleared.")
+                self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
+                self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
+                self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
+                self.print_dim("Type /help for commands. F1 to collapse/expand thinking. Type /exit to quit.\n")
+                self.print_info("Session history, memory, attachments, web context, and screen cleared.")
+                print()
 
             return True
 
         self.print_error(f"Unknown command: {command}")
         self.print_dim("Type /help to see available commands.")
+        print()
         return True
 
     def parse_command(self, raw: str) -> tuple[str, str]:
@@ -841,13 +1632,324 @@ class SimpleAgentTUI:
         return command.strip(), arg.strip()
 
     # -----------------------------
+    # Attachments
+    # -----------------------------
+    def delete_attachment_files(self) -> None:
+        """
+        Delete files saved inside the app attachment folder.
+        Original files attached from elsewhere are not deleted unless they are inside ATTACHMENTS_DIR.
+        """
+        if not ATTACHMENTS_DIR.exists():
+            return
+
+        for path in ATTACHMENTS_DIR.iterdir():
+            if not path.is_file():
+                continue
+
+            try:
+                path.unlink()
+            except OSError:
+                continue
+
+    def handle_attach_command(self, arg: str) -> None:
+        if not arg:
+            print()
+            self.print_error("No attachment path provided.")
+            self.print_dim("Usage: /attach <path...>")
+            print()
+            return
+
+        paths = self.parse_attachment_paths(arg)
+        if not paths:
+            print()
+            self.print_error("Could not parse attachment path.")
+            print()
+            return
+
+        added_count = 0
+        for path in paths:
+            if self.add_attachment(path):
+                added_count += 1
+
+        if added_count:
+            print()
+            self.print_info(f"Attached {added_count} file(s).")
+            print()
+            self.session.app.invalidate()
+
+    def parse_attachment_paths(self, raw_paths: str) -> list[Path]:
+        try:
+            parts = shlex.split(raw_paths)
+        except ValueError as error:
+            print()
+            self.print_error(f"Could not parse paths: {error}")
+            print()
+            return []
+
+        return [Path(part).expanduser() for part in parts]
+
+    def add_attachment(self, path: Path) -> bool:
+        path = path.expanduser()
+
+        if not path.exists():
+            print()
+            self.print_error(f"Attachment not found: {path}")
+            print()
+            return False
+
+        if not path.is_file():
+            print()
+            self.print_error(f"Attachment is not a file: {path}")
+            print()
+            return False
+
+        if not self.is_supported_attachment(path):
+            print()
+            self.print_error(f"Unsupported attachment type: {path.name}")
+            self.print_dim("Supported: text/code files, images .png/.jpg/.jpeg, PDF, CSV/TSV, Excel .xls/.xlsx")
+            print()
+            return False
+
+        resolved_path = str(path.resolve())
+        if any(item.get("source_path") == resolved_path for item in self.attachments):
+            print()
+            self.print_dim(f"Already attached: {path.name}")
+            print()
+            return False
+
+        embedded_context_items = self.embed_attachment(path)
+        if not embedded_context_items:
+            return False
+
+        mime_type, _ = mimetypes.guess_type(resolved_path)
+        attachment = {
+            "source_path": resolved_path,
+            "filename": path.name,
+            "extension": path.suffix.lower(),
+            "mime_type": mime_type or "application/octet-stream",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self.attachments.append(attachment)
+        self.store_attachment_context_items(embedded_context_items)
+        self.store_full_text_attachment_context(path)
+        return True
+
+    def embed_attachment(self, path: Path) -> list[dict]:
+        """
+        Extract, chunk, and embed one attachment immediately when it is attached.
+        """
+        print()
+        self.print_dim(f"Reading attachment: {path.name}")
+
+        try:
+            embedded_context_items = utils.attachment_to_embedded_context_items(
+                client=self.client,
+                file_path=path,
+                model=self.embedding_model,
+                vision_model=self.vision_model if path.suffix.lower() in IMAGE_ATTACHMENT_EXTENSIONS else None,
+            )
+        except Exception as error:
+            self.print_error(f"Could not read/embed attachment {path.name}: {error}")
+            print()
+            return []
+
+        if not embedded_context_items:
+            self.print_error(f"No readable content found in attachment: {path.name}")
+            print()
+            return []
+
+        self.print_dim(f"Embedded {len(embedded_context_items)} attachment chunk(s): {path.name}")
+        print()
+        return embedded_context_items
+
+    def store_attachment_context_items(self, context_items: list[dict]) -> None:
+        """
+        Store embedded attachment chunks.
+
+        Image attachments are stored separately and are always injected in full.
+        Non-image attachments are stored in the vector index for relevance ranking.
+        """
+        for context_item in context_items:
+            stored_item = dict(context_item)
+            extension = str(stored_item.get("extension") or "").lower()
+
+            if extension in IMAGE_ATTACHMENT_EXTENSIONS or stored_item.get("source_type") == "image_attachment":
+                stored_item.pop("embedding", None)
+                self.image_attachment_context_items.append(stored_item)
+                continue
+
+            self.attachment_context_items.append(stored_item)
+            self.attachment_index.add_item(stored_item)
+
+    def store_full_text_attachment_context(self, path: Path) -> None:
+        """
+        Store full source text for text-like attachments.
+
+        Text/code/config questions often need the full file for edits, rewrites,
+        debugging, and source-of-truth context. We still keep ranked embedding chunks,
+        but full text is also injected for complete context.
+        """
+        extension = path.suffix.lower()
+        if extension not in utils.TEXT_ATTACHMENT_EXTENSIONS:
+            return
+
+        resolved_path = str(path.resolve())
+        if any(item.get("source_path") == resolved_path for item in self.text_attachment_full_context_items):
+            return
+
+        try:
+            content = utils.read_attachment_to_string(path)
+        except Exception as error:
+            self.print_error(f"Could not read full text context for {path.name}: {error}")
+            return
+
+        content = content.strip()
+        if not content:
+            return
+
+        metadata = utils.build_attachment_metadata(path)
+        self.text_attachment_full_context_items.append(
+            {
+                "source_type": "text_attachment_full_context",
+                "source_path": resolved_path,
+                "title": path.name,
+                "content": content,
+                **metadata,
+            }
+        )
+
+    def is_supported_attachment(self, path: Path) -> bool:
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        if name in {".gitignore", ".env"}:
+            return True
+        return suffix in SUPPORTED_ATTACHMENT_EXTENSIONS
+
+    def handle_paste_command(self) -> None:
+        pasted_text = self.read_clipboard_text()
+        if pasted_text:
+            self.next_input_prefill = pasted_text
+            print()
+            self.print_info("Clipboard text loaded into the next prompt.")
+            print()
+            return
+
+        image_path = self.save_clipboard_image()
+        if image_path and self.add_attachment(image_path):
+            print()
+            self.print_info(f"Clipboard image attached: {image_path.name}")
+            print()
+            self.session.app.invalidate()
+            return
+
+        print()
+        self.print_error("Clipboard does not contain supported text or image data.")
+        print()
+
+    def read_clipboard_text(self) -> str:
+        system_name = platform.system()
+        commands: list[list[str]] = []
+
+        if system_name == "Darwin":
+            commands = [["pbpaste"]]
+        elif system_name == "Linux":
+            commands = [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-out"], ["xsel", "--clipboard", "--output"]]
+        elif system_name == "Windows":
+            commands = [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+
+        for command in commands:
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=3)
+            except (FileNotFoundError, subprocess.SubprocessError):
+                continue
+
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+
+        return ""
+
+    def save_clipboard_image(self) -> Path | None:
+        system_name = platform.system()
+        if system_name in {"Darwin", "Windows"}:
+            return self.save_clipboard_image_with_pillow()
+
+        self.print_dim("Image clipboard paste currently supports macOS/Windows with Pillow.")
+        self.print_dim("Install it with: pip install pillow")
+        return None
+
+    def save_clipboard_image_macos(self) -> Path | None:
+        return self.save_clipboard_image_with_pillow()
+
+    def save_clipboard_image_with_pillow(self) -> Path | None:
+        try:
+            clipboard_data = ImageGrab.grabclipboard()
+        except Exception as error:
+            print()
+            self.print_error(f"Could not read clipboard image: {error}")
+            print()
+            return None
+
+        if clipboard_data is None:
+            return None
+
+        # Some platforms return a list of file paths when files are copied, not raw image data.
+        # /paste intentionally ignores copied files; use /attach <path> for files instead.
+        if isinstance(clipboard_data, list):
+            return None
+
+        if not isinstance(clipboard_data, Image.Image):
+            return None
+
+        ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        filename = datetime.now().strftime("clipboard_%Y%m%d_%H%M%S.png")
+        output_path = ATTACHMENTS_DIR / filename
+
+        try:
+            clipboard_data.save(output_path, "PNG")
+        except Exception as error:
+            print()
+            self.print_error(f"Could not save clipboard image: {error}")
+            print()
+            return None
+
+        if not output_path.exists():
+            return None
+
+        return output_path
+
+    def build_attachment_toolbar_lines(self, max_visible: int = 3) -> list[str]:
+        if not self.attachments:
+            return []
+
+        visible_attachments = self.attachments[-max_visible:]
+        hidden_count = max(0, len(self.attachments) - len(visible_attachments))
+
+        lines: list[str] = []
+
+        for display_index, attachment in enumerate(
+            visible_attachments,
+            start=len(self.attachments) - len(visible_attachments) + 1,
+        ):
+            filename = attachment.get("filename") or Path(attachment.get("source_path", "")).name
+            extension = attachment.get("extension") or "file"
+            lines.append(
+                f"attachment {display_index} {extension} · {self.clip_text(filename, 72)}"
+            )
+
+        if hidden_count:
+            lines.insert(0, f"+{hidden_count} more attachment(s)")
+
+        return lines
+
+    # -----------------------------
     # Display
     # -----------------------------
 
     def show_landing_page(self) -> None:
-        print(self.blue(MASCOT))
-        print(self.bold("Welcome to SimpleAgent TUI"))
-        print(self.dim("A tiny local AI agent shell powered by Ollama.\n"))
+        for line in MASCOT_LINES:
+            print(self.blue(line))
+
+        print()
 
     def show_about(self) -> None:
         print()
@@ -856,9 +1958,10 @@ class SimpleAgentTUI:
         print()
         print("Backend:")
         print(f"  Ollama host: {self.host}")
-        print(f"  Model:       {self.model}")
-        print(f"  Embeddings:  {self.embedding_model}")
-        print(f"  Streaming:   {self.stream}")
+        print(f"  Model:       {self.model}{self.format_num_context(self.model_num_context)}")
+        print(f"  Embeddings:  {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
+        print(f"  Vision:      {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
+        print("  Streaming:   always on")
         print(f"  Recent chat: {len(self.messages)}/{MAX_RECENT_MESSAGES}")
         print(f"  Memory items:{len(self.memory_items)}/{MAX_RELEVANT_MEMORY_ITEMS}")
         print()
@@ -866,25 +1969,49 @@ class SimpleAgentTUI:
     def set_model(self, model: str, persist: bool = True) -> None:
         self.model = model
         self.client.config.model = model
+        self.model_num_context = self.get_ollama_model_num_context(model)
 
         if persist:
             self.config["model"] = model
             self.config["host"] = self.host
             save_config(self.config)
-            self.print_info(f"Model changed to: {self.model} and saved to {CONFIG_FILE}")
+            self.print_info(
+                f"Model changed to: {self.model}{self.format_num_context(self.model_num_context)} and saved to {CONFIG_FILE}"
+            )
         else:
-            self.print_info(f"Model changed to: {self.model}")
+            self.print_info(f"Model changed to: {self.model}{self.format_num_context(self.model_num_context)}")
 
     def set_embedding_model(self, model: str, persist: bool = True) -> None:
         self.embedding_model = model
+        self.embedding_model_num_context = self.get_ollama_model_num_context(model)
 
         if persist:
             self.config["embedding_model"] = self.embedding_model
             self.config["host"] = self.host
             save_config(self.config)
-            self.print_info(f"Embeddings model changed to: {self.embedding_model} and saved to {CONFIG_FILE}")
+            self.print_info(
+                f"Embeddings model changed to: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)} and saved to {CONFIG_FILE}"
+            )
         else:
-            self.print_info(f"Embeddings model changed to: {self.embedding_model}")
+            self.print_info(
+                f"Embeddings model changed to: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}"
+            )
+
+    def set_vision_model(self, model: str, persist: bool = True) -> None:
+        self.vision_model = model
+        self.vision_model_num_context = self.get_ollama_model_num_context(model)
+
+        if persist:
+            self.config["vision_model"] = self.vision_model
+            self.config["host"] = self.host
+            save_config(self.config)
+            self.print_info(
+                f"Vision model changed to: {self.vision_model}{self.format_num_context(self.vision_model_num_context)} and saved to {CONFIG_FILE}"
+            )
+        else:
+            self.print_info(
+                f"Vision model changed to: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}"
+            )
 
     def select_model(self) -> None:
         try:
@@ -935,6 +2062,8 @@ class SimpleAgentTUI:
                 markers.append("chat")
             if model == self.embedding_model:
                 markers.append("embed")
+            if model == self.vision_model:
+                markers.append("vision")
             marker_text = f" [{' / '.join(markers)}]" if markers else ""
             print(f"  {index:02d}. {model}{marker_text}")
 
@@ -970,8 +2099,11 @@ class SimpleAgentTUI:
                 markers.append("chat")
             if model == self.embedding_model:
                 markers.append("embed")
+            if model == self.vision_model:
+                markers.append("vision")
             marker_text = f" * [{' / '.join(markers)}]" if markers else ""
-            print(f"  {model}{marker_text}")
+            num_context = self.get_ollama_model_num_context(model)
+            print(f"  {model}{self.format_num_context(num_context)}{marker_text}")
         print()
 
     def show_history(self) -> None:
@@ -982,7 +2114,13 @@ class SimpleAgentTUI:
         print()
         print(self.bold("Session history:"))
         print(self.dim(f"Recent chat: {len(self.messages)}/{MAX_RECENT_MESSAGES}"))
-        print(self.dim(f"Memory items: {len(self.memory_items)}/{MAX_RELEVANT_MEMORY_ITEMS}"))
+        print(
+            self.dim(
+                f"Memory items: {len(self.memory_items)} stored · "
+                f"retrieval top-k {MAX_RELEVANT_MEMORY_ITEMS} · "
+                f"index {self.memory_index.backend}"
+            )
+        )
 
         if self.messages:
             print()
@@ -1014,10 +2152,50 @@ class SimpleAgentTUI:
         #print(self.dim("-" * 48))
 
     def get_bottom_toolbar(self):
-        stream_status = "stream" if self.stream else "no-stream"
-        return HTML(
+        toolbar_lines = []
+        for line in self.build_attachment_toolbar_lines():
+            toolbar_lines.append(f"<ansiyellow> ■ {self.escape_toolbar_html(line)} </ansiyellow>")
+
+        for line in self.format_web_sources_for_toolbar():
+            toolbar_lines.append(
+                f"<ansigreen> ◆ {self.escape_toolbar_html(line)} </ansigreen>"
+            )
+
+        toolbar_lines.append(
             f"<ansiblue> @ {APP_NAME} </ansiblue> "
-            f"<ansigray>■ {self.model} ■ {stream_status} ■ type / for commands</ansigray>"
+            f"<ansigray>■ {self.escape_toolbar_html(self.model)} ■ vision {self.escape_toolbar_html(self.vision_model)} ■ type / for commands</ansigray>"
+        )
+        return HTML("\n".join(toolbar_lines))
+
+    def format_web_sources_for_toolbar(self, max_visible: int = 3) -> list[str]:
+        if not self.web_sources:
+            return []
+
+        visible_sources = self.web_sources[-max_visible:]
+        hidden_count = max(0, len(self.web_sources) - len(visible_sources))
+
+        lines: list[str] = []
+
+        for display_index, item in enumerate(visible_sources, start=len(self.web_sources) - len(visible_sources) + 1):
+            label = item.get("label", "web")
+            source_type = item.get("source_type", "web")
+            prefix = "search" if source_type == "search" else "url"
+
+            lines.append(
+                f"web {display_index} {prefix} · {self.clip_text(label, 72)}"
+            )
+
+        if hidden_count:
+            lines.insert(0, f"+{hidden_count} more web source(s)")
+
+        return lines
+
+    def escape_toolbar_html(self, text: str) -> str:
+        return (
+            str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
         )
 
     def show_command_preview(self) -> None:
@@ -1029,261 +2207,111 @@ class SimpleAgentTUI:
         print()
 
     def read_user_input(self) -> str:
+        default_text = self.next_input_prefill
+        self.next_input_prefill = ""
         return self.session.prompt(
             HTML("<ansicyan>❯ </ansicyan>"),
             complete_while_typing=True,
+            default=default_text,
         )
 
     def clear_screen(self) -> None:
         # Clear visible screen, clear scrollback buffer where supported, then move cursor home.
         print("\033[2J\033[3J\033[H", end="", flush=True)
 
-    # -----------------------------
-    # Text styling
-    # -----------------------------
-
-    def supports_colour(self) -> bool:
-        return True
-
-    def colour(self, text: str, code: str) -> str:
-        if not self.supports_colour():
-            return text
-        return f"\033[{code}m{text}\033[0m"
-
-    def bold(self, text: str) -> str:
-        return self.colour(text, "1")
-
-    def dim(self, text: str) -> str:
-        return self.colour(text, "2")
-
-    def blue(self, text: str) -> str:
-        return self.colour(text, "96")
-
-    def green(self, text: str) -> str:
-        return self.colour(text, "92")
-
-    def red(self, text: str) -> str:
-        return self.colour(text, "91")
-
-    def print_info(self, text: str) -> None:
-        print(self.blue("[info]"), text)
-
-    def print_error(self, text: str) -> None:
-        print(self.red("[error]"), text)
-
-    def print_dim(self, text: str) -> None:
-        print(self.dim(text))
-
-    def print_tui_markdown(self, text: str) -> None:
-        lines = text.strip("\n").splitlines()
-        index = 0
-
-        while index < len(lines):
-            line = lines[index]
-
-            if self.is_markdown_table_start(lines, index):
-                table_lines = []
-                while index < len(lines) and lines[index].strip().startswith("|"):
-                    table_lines.append(lines[index])
-                    index += 1
-                self.print_tui_table(table_lines)
-                continue
-
-            self.print_tui_line(line)
-            index += 1
 
 
-    def print_tui_line(self, line: str) -> None:
-        stripped = line.strip()
+    def refresh_model_context_lengths(self) -> None:
+        self.model_num_context = self.get_ollama_model_num_context(self.model)
+        self.embedding_model_num_context = self.get_ollama_model_num_context(self.embedding_model)
+        self.vision_model_num_context = self.get_ollama_model_num_context(self.vision_model)
 
-        if not stripped:
-            print()
-            return
+    def format_num_context(self, num_context: int | None) -> str:
+        if not num_context:
+            return ""
+        return f" [{num_context:,} ctx]"
 
-        heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-        if heading_match:
-            level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
-            print(self.heading_colour(level, self.apply_inline_styles(title, allow_colour=False)))
-            return
+    def get_ollama_model_num_context(self, model: str) -> int | None:
+        if not model:
+            return None
 
-        if stripped in {"---", "***", "___"}:
-            print(self.dim("─" * min(72, self.safe_terminal_width())))
-            return
+        try:
+            response = self.ollama_show_model(model)
+        except Exception:
+            return None
 
-        if stripped.startswith(">"):
-            quote_text = stripped.lstrip("> ").strip()
-            print(self.colour("│ ", "90") + self.dim(self.apply_inline_styles(quote_text, allow_colour=False)))
-            return
+        model_info = response.get("model_info") or {}
+        context_from_info = self.extract_context_length_from_model_info(model_info)
+        if context_from_info:
+            return context_from_info
 
-        bullet_match = re.match(r"^(\s*)([-*+] |\d+\.\s+)(.*)$", line)
-        if bullet_match:
-            indent, bullet, content = bullet_match.groups()
-            marker = self.colour(bullet.strip(), "94")
-            print(f"{indent}{marker} {self.apply_inline_styles(content)}")
-            return
+        parameters = response.get("parameters") or ""
+        return self.extract_num_context_from_parameters(parameters)
 
-        print(self.apply_inline_styles(line))
-
-    def is_markdown_table_start(self, lines: list[str], index: int) -> bool:
-        if index + 1 >= len(lines):
-            return False
-
-        current = lines[index].strip()
-        separator = lines[index + 1].strip()
-
-        if not current.startswith("|") or not current.endswith("|"):
-            return False
-
-        return bool(re.match(r"^\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$", separator))
-
-    def print_tui_table(self, table_lines: list[str]) -> None:
-        rows = [self.parse_table_row(line) for line in table_lines]
-
-        if len(rows) < 2:
-            for line in table_lines:
-                self.print_tui_line(line)
-            return
-
-        header = rows[0]
-        body = rows[2:]
-        column_count = max(len(row) for row in rows if row)
-
-        normalised_rows = [self.pad_row(header, column_count), *[self.pad_row(row, column_count) for row in body]]
-        widths = self.calculate_table_column_widths(normalised_rows, column_count)
-
-        top = "╭" + "┬".join("─" * (width + 2) for width in widths) + "╮"
-        sep = "├" + "┼".join("─" * (width + 2) for width in widths) + "┤"
-        bottom = "╰" + "┴".join("─" * (width + 2) for width in widths) + "╯"
-
-        print(self.dim(top))
-        self.print_tui_table_row(normalised_rows[0], widths, is_header=True)
-        print(self.dim(sep))
-        for row in normalised_rows[1:]:
-            self.print_tui_table_row(row, widths, is_header=False)
-        print(self.dim(bottom))
-
-    def calculate_table_column_widths(self, rows: list[list[str]], column_count: int) -> list[int]:
-        max_width = self.safe_terminal_width()
-        frame_width = 2 + column_count + 1
-        padding_width = column_count * 2
-        separator_width = max(0, column_count - 1)
-        available_width = max_width - frame_width - padding_width - separator_width
-
-        if column_count <= 0:
-            return []
-
-        min_width = 8
-        available_width = max(column_count * min_width, available_width)
-
-        natural_widths = [0] * column_count
-        for row in rows:
-            for col_index, cell in enumerate(row):
-                plain = self.strip_ansi(self.apply_inline_styles(cell))
-                longest_word = max((len(word) for word in re.findall(r"\S+", plain)), default=0)
-                natural_widths[col_index] = max(natural_widths[col_index], min(max(len(plain), longest_word), 40))
-
-        widths = [max(min_width, min(width, 40)) for width in natural_widths]
-
-        while sum(widths) > available_width:
-            widest = max(range(column_count), key=lambda index: widths[index])
-            if widths[widest] <= min_width:
-                break
-            widths[widest] -= 1
-
-        while sum(widths) < available_width:
-            expandable = [index for index, width in enumerate(widths) if width < natural_widths[index]]
-            if not expandable:
-                break
-            target = max(expandable, key=lambda index: natural_widths[index] - widths[index])
-            widths[target] += 1
-
-        return widths
-
-    def parse_table_row(self, line: str) -> list[str]:
-        stripped = line.strip()
-        if stripped.startswith("|"):
-            stripped = stripped[1:]
-        if stripped.endswith("|"):
-            stripped = stripped[:-1]
-        return [cell.strip() for cell in stripped.split("|")]
-
-    def pad_row(self, row: list[str], column_count: int) -> list[str]:
-        return [*row, *([""] * (column_count - len(row)))]
-
-    def print_tui_table_row(self, row: list[str], widths: list[int], is_header: bool) -> None:
-        wrapped_cells = [self.wrap_table_cell(cell, widths[col_index]) for col_index, cell in enumerate(row)]
-        row_height = max((len(lines) for lines in wrapped_cells), default=1)
-
-        for line_index in range(row_height):
-            cells = []
-            for col_index, lines in enumerate(wrapped_cells):
-                width = widths[col_index]
-                cell_line = lines[line_index] if line_index < len(lines) else ""
-                styled = self.apply_inline_styles(cell_line)
-                styled = self.table_column_colour(col_index, styled)
-                if is_header:
-                    styled = self.bold(styled)
-                padding = " " * max(0, width - len(self.strip_ansi(styled)))
-                cells.append(f" {styled}{padding} ")
-            print(self.dim("│") + self.dim("│").join(cells) + self.dim("│"))
-
-    def wrap_table_cell(self, cell: str, width: int) -> list[str]:
-        plain = cell.strip()
-
-        if not plain:
-            return [""]
-
-        wrapped = textwrap.wrap(
-            plain,
-            width=max(1, width),
-            break_long_words=False,
-            break_on_hyphens=False,
+    def ollama_show_model(self, model: str) -> dict:
+        url = self.host.rstrip("/") + "/api/show"
+        payload = json.dumps({"model": model}).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
 
-        return wrapped or [""]
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8")
 
-    def apply_inline_styles(self, text: str, allow_colour: bool = True) -> str:
-        def bold_replacer(match):
-            inner = match.group(1)
-            if allow_colour:
-                return self.bold(self.colour(inner, "94"))
-            return self.bold(inner)
+        return json.loads(body)
 
-        return re.sub(r"\*\*(.+?)\*\*", bold_replacer, text)
+    def extract_context_length_from_model_info(self, model_info: dict) -> int | None:
+        context_keys = [
+            "context_length",
+            "llama.context_length",
+            "qwen2.context_length",
+            "qwen3.context_length",
+            "gemma.context_length",
+            "mistral.context_length",
+            "deepseek2.context_length",
+            "deepseek3.context_length",
+            "granite.context_length",
+            "granite-vision.context_length",
+            "nomic-bert.context_length",
+        ]
 
-    def heading_colour(self, level: int, text: str) -> str:
-        codes = {
-            1: "94;1",
-            2: "94",
-            3: "36",
-            4: "96",
-            5: "90",
-            6: "2",
-        }
-        prefix = "▌" if level <= 2 else "•"
-        return self.colour(f"{prefix} {text}", codes.get(level, "90"))
+        for key in context_keys:
+            value = model_info.get(key)
+            parsed = self.parse_positive_int(value)
+            if parsed:
+                return parsed
 
-    def table_column_colour(self, index: int, text: str) -> str:
-        pastel_codes = ["95", "96", "92", "93", "94", "91"]
-        return self.colour(text, pastel_codes[index % len(pastel_codes)])
+        for key, value in model_info.items():
+            if key.endswith(".context_length"):
+                parsed = self.parse_positive_int(value)
+                if parsed:
+                    return parsed
 
-    def safe_terminal_width(self) -> int:
+        return None
+
+    def extract_num_context_from_parameters(self, parameters: str) -> int | None:
+        if not parameters:
+            return None
+
+        match = re.search(r"(?:^|\n)\s*num_ctx\s+(\d+)\b", parameters)
+        if not match:
+            return None
+
+        return self.parse_positive_int(match.group(1))
+
+    def parse_positive_int(self, value) -> int | None:
         try:
-            return max(40, min(os.get_terminal_size().columns, 120))
-        except OSError:
-            return 88
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
 
-    def clip_text(self, text: str, width: int) -> str:
-        plain = text.strip()
-        if len(plain) <= width:
-            return plain
-        if width <= 1:
-            return plain[:width]
-        return plain[: max(1, width - 1)] + "…"
+        if parsed <= 0:
+            return None
 
-    def strip_ansi(self, text: str) -> str:
-        return re.sub(r"\033\[[0-9;]*m", "", text)
+        return parsed
 
 
 def main() -> None:

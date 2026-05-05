@@ -1,3 +1,9 @@
 prompt-toolkit>=3.0.52
 wcwidth>=0.7.0
-ollama>=0.20.2
+playwright>=1.59.0
+faiss-cpu
+numpy
+pillow
+pypdf
+openpyxl
+langchain-text-splitters
