@@ -6,22 +6,25 @@
 
 > Work work. Ship ship. Poor man's Claude Code for tiny local models.
 
+![screenshot](screenshots/formatting_2.png)
+
 SimpleAgent is designed for local Ollama models such as `nemotron-3-nano:4b`, with a focus on practical code editing, workflow orchestration, file attachments, and safe patch application inside a terminal UI.
+
+![funny](screenshots/humour.png)
+
+Served in a fun flavour!
 
 ---
 
 ## Table of Contents
 
 - [Designing for Small Local Models](#designing-for-small-local-models)
-  - [1. Small Models Need Procedures, Not Vibes](#1-small-models-need-procedures-not-vibes)
-  - [2. Split Reasoning from Patch Generation](#2-split-reasoning-from-patch-generation)
-  - [3. Use Raw Stored Output, Pretty Display Only for Humans](#3-use-raw-stored-output-pretty-display-only-for-humans)
-  - [4. File Context Must Be Explicit and Refreshable](#4-file-context-must-be-explicit-and-refreshable)
-  - [5. Patch Application Must Be Conservative](#5-patch-application-must-be-conservative)
-  - [6. Let the Diff Decide What Is Safe](#6-let-the-diff-decide-what-is-safe)
-  - [7. Make Parser Recovery Practical](#7-make-parser-recovery-practical)
-  - [8. Keep Humans in the Loop](#8-keep-humans-in-the-loop)
-  - [9. Prefer Local, Inspectable Workflows](#9-prefer-local-inspectable-workflows)
+  - [1. File Context Must Be Explicit and Refreshable](#4-file-context-must-be-explicit-and-refreshable)
+  - [2. Patch Application Must Be Conservative](#5-patch-application-must-be-conservative)
+  - [3. Let the Diff Decide What Is Safe](#6-let-the-diff-decide-what-is-safe)
+  - [4. Make Parser Recovery Practical](#7-make-parser-recovery-practical)
+  - [5. Keep Humans in the Loop](#8-keep-humans-in-the-loop)
+  - [6. Prefer Local, Inspectable Workflows](#9-prefer-local-inspectable-workflows)
 - [What SimpleAgent Does](#what-simpleagent-does)
 - [Core Features](#core-features)
 - [Coding Workflow](#coding-workflow)
@@ -63,87 +66,7 @@ Small models often fail in predictable ways:
 
 SimpleAgent's design is a response to those failure modes.
 
-### 1. Small Models Need Procedures, Not Vibes
-
-Small models perform better when instructions are written as strict procedures instead of broad requests.
-
-Instead of asking:
-
-```text
-Use SEARCH/REPLACE format.
-```
-
-SimpleAgent workflows can instruct the model step by step:
-
-```text
-Output the file name first.
-For every block, output exactly:
-<<<<<<< SEARCH
-exact existing line(s) from the attached file, preserving whitespace
-=======
-replacement line(s), preserving required whitespace
->>>>>>> REPLACE
-```
-
-This matters because small models often behave better when given an execution recipe:
-
-1. print the filename,
-2. print the opening marker,
-3. copy exact existing code,
-4. print the divider,
-5. output replacement code,
-6. print the closing marker.
-
-The model is not asked to infer a format. It is asked to follow a sequence.
-
-### 2. Split Reasoning from Patch Generation
-
-One major design decision is to separate planning from final edit generation.
-
-A typical coding workflow can run multiple prompts:
-
-```text
-Prompt 1: draft a rough implementation plan.
-Prompt 2: generate the actual code patch using the plan.
-Prompt 3: optionally review or reconstruct the solution.
-```
-
-This is useful because small models often fail when asked to reason, plan, code, preserve whitespace, and format a patch all in one response.
-
-SimpleAgent workflows allow each prompt to have a narrower job:
-
-| Step | Purpose |
-|---|---|
-| Plan | Understand the change and identify the target code area |
-| Draft patch | Produce rough edit intent, even if imperfect |
-| Final patch | Generate structured code output using the previous context |
-| Review | Check or rebuild the answer into a cleaner final form |
-
-This makes the model more reliable without needing a larger model.
-
-### 3. Use Raw Stored Output, Pretty Display Only for Humans
-
-The terminal can render model replies with markdown formatting, code boxes, colours, and diff highlighting. However, `/code` does not parse the rendered terminal output.
-
-SimpleAgent follows this rule:
-
-```text
-Store raw model output.
-Render pretty output for humans.
-Parse the raw stored output for edits.
-```
-
-This prevents UI formatting from corrupting patch markers such as:
-
-```text
-<<<<<<< SEARCH
-=======
->>>>>>> REPLACE
-```
-
-The `/markup` command can toggle pretty formatting on or off, but `/code` still sees the raw assistant reply.
-
-### 4. File Context Must Be Explicit and Refreshable
+### 1. File Context Must Be Explicit and Refreshable
 
 Small models need clear file context. SimpleAgent uses `/attach` to load files into the conversation and embed their contents for retrieval.
 
@@ -156,7 +79,7 @@ Design goals:
 - Refresh changed attachments automatically.
 - Allow `/workflow-debug` to inspect the actual prompt messages sent.
 
-### 5. Patch Application Must Be Conservative
+### 2. Patch Application Must Be Conservative
 
 Small models can generate dangerous edits. A model may output only one function inside a fenced code block, while the parser may initially treat it as a whole-file replacement.
 
@@ -175,7 +98,7 @@ Model output
 → F2 or F3 applies
 ```
 
-### 6. Let the Diff Decide What Is Safe
+### 3. Let the Diff Decide What Is Safe
 
 One of SimpleAgent's most important design ideas is using the diff itself as a safety signal.
 
@@ -195,7 +118,7 @@ Risky diff regions are rendered in dark yellow where supported.
 
 This allows SimpleAgent to recover useful edits from imperfect model output. Instead of rejecting the entire response or applying a destructive patch, it can apply only the parts that are structurally safe.
 
-### 7. Make Parser Recovery Practical
+### 4. Make Parser Recovery Practical
 
 Small models do not always produce perfect Aider-style patches.
 
@@ -223,7 +146,7 @@ b/hello.py
 
 This matters because small models often produce path labels with markdown artefacts.
 
-### 8. Keep Humans in the Loop
+### 5. Keep Humans in the Loop
 
 SimpleAgent is not designed to silently rewrite a project. It is designed to make a small model useful while keeping the developer in control.
 
@@ -231,7 +154,7 @@ The human reviews the diff before applying. The tool makes the model productive,
 
 This is especially important for local models because code quality can vary depending on prompt structure, temperature, context, and task complexity.
 
-### 9. Prefer Local, Inspectable Workflows
+### 6. Prefer Local, Inspectable Workflows
 
 SimpleAgent workflows are plain markdown files. They are easy to edit, inspect, and version.
 
@@ -304,8 +227,7 @@ A typical coding flow looks like this:
 
 1. Attach a file.
 2. Ask for a small code change.
-3. Workflow prompt 1 creates a rough plan.
-4. Workflow prompt 2 generates patch output.
+4. Workflow prompt generates patch output.
 5. `/code` parses the last assistant reply.
 6. SimpleAgent shows a diff.
 7. User presses `F2`, `F3`, or `Esc`.
@@ -338,6 +260,8 @@ SimpleAgent parses the raw response, generates a diff, and asks for confirmation
 Personas are SimpleAgent's lightweight way to change both the model's behaviour and the workflow that runs for a given task.
 
 A persona provides **system context**. This is the high-level instruction block that tells the model how it should behave, what style it should use, and what constraints it should follow.
+
+![persona](screenshots/persona.png)
 
 For example, a coding persona can tell the model to:
 
@@ -427,6 +351,8 @@ This is important when tuning prompts for small models because you need to see w
 
 The `/code` command attempts to parse the last assistant reply into file edits.
 
+![codediff](screenshots/code_diff.png)
+
 Supported edit styles include:
 
 ### SEARCH/REPLACE Blocks
@@ -487,6 +413,8 @@ This allows the user to accept useful edits from imperfect model output without 
 
 SimpleAgent treats local files and web pages as first-class context sources. Both `/attach` and `/web` are designed to give small local models more grounded information before they answer or generate code.
 
+![context](screenshots/multi_context.png)
+
 ### File Attachments
 
 Files can be attached with:
@@ -543,6 +471,8 @@ The `/web` command can be used with either a direct URL or a search query:
 /web https://example.com/article
 /web latest ollama structured output examples
 ```
+
+![web](screenshots/web_scrape_sources.png)
 
 When given a URL, SimpleAgent fetches and extracts the page content. When given a search query, SimpleAgent uses DuckDuckGo search to find relevant pages, scrape useful information, and add it as web context.
 
