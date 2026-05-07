@@ -8,7 +8,7 @@ Tested on Macbook Pro M2, 16GB RAM. This is made for users who wants to experien
 
 > Work work. Ship ship. Poor man's Claude Code for tiny local models.
 
-![screenshot](screenshots/formatting_2.png)
+![demo](screenshots/simpleagent_demo.gif)
 
 SimpleAgent is designed for local Ollama models such as `nemotron-3-nano:4b`, with a focus on practical code editing, workflow orchestration, file attachments, and safe patch application inside a terminal UI.
 
