@@ -33,7 +33,7 @@ Served in a fun flavour!
 - [Persona System](#persona-system)
 - [Workflow System](#workflow-system)
 - [Patch Review and Apply System](#patch-review-and-apply-system)
-- [Attachment and Web Context System](#attachment-and-web-context-system)
+- [Attachment and Web Context System (Local RAG)](#attachment-and-web-context-system-(local-rag))
 - [Terminal UX](#terminal-ux)
 - [Commands](#commands)
 - [Keybindings](#keybindings)
@@ -44,7 +44,6 @@ Served in a fun flavour!
 - [Project Structure](#project-structure)
 - [Example Coding Flow](#example-coding-flow)
 - [Why This Project Matters](#why-this-project-matters)
-- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
@@ -411,9 +410,9 @@ This allows the user to accept useful edits from imperfect model output without 
 
 ---
 
-## Attachment and Web Context System
+## Attachment and Web Context System (Local RAG)
 
-SimpleAgent treats local files and web pages as first-class context sources. Both `/attach` and `/web` are designed to give small local models more grounded information before they answer or generate code.
+SimpleAgent treats local files and web pages as first-class context sources. This is SimpleAgent's lightweight local Retrieval-Augmented Generation (RAG) layer: `/attach` and `/web` retrieve relevant information, inject it into the prompt, and give small local models more grounded context before they answer or generate code.
 
 ![context](screenshots/multi_context.png)
 
