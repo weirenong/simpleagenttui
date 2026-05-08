@@ -498,7 +498,9 @@ In short:
 |---|---|---|
 | Local files | `/attach` | Give the model project/code/document context |
 | Direct web pages | `/web <url>` | Add a specific page as context |
-| Web search | `/web <query>` | Use DuckDuckGo to find and scrape relevant context |
+| Web search | `/web <query>` | Use DuckDuckGo to find and scrape selected relevant context |
+
+DuckDuckGo web search implementation was inspired by Google Gemini's notebook feature.
 
 ---
 
@@ -568,8 +570,8 @@ The TUI aims to make local model experimentation fast and inspectable.
 1. Clone this repository:
 
 ```bash
-git clone <your-repo-url>
-cd SimpleAgentTUI
+git clone https://github.com/weirenong/simpleagent.git
+cd simpleagent
 ```
 
 2. Install Python dependencies:
