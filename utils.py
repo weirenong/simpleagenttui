@@ -237,30 +237,6 @@ def normalise_model_text_response(response: Any) -> str:
 
     return str(response)
 
-def review_and_apply_plain_code_blocks_from_llm_output(
-    llm_output: str,
-    title: str = "Full-file code diff review",
-) -> bool:
-    """
-    Deprecated shim — delegates to editblock.WholeFileEditor.
-
-    Older coder prompts sometimes emit file headers like:
-        File name:** `hello.py`
-        File contents:
-
-    The legacy whole-file parser can mistake those markdown labels for the path.
-    Normalise that common shape into a cleaner filename/code-fence format before
-    passing it into editblock.
-    """
-    app = getattr(review_and_apply_plain_code_blocks_from_llm_output, "app", None)
-    return editblock.apply_llm_edits(
-        app=app,
-        llm_output=normalise_llm_file_headers(llm_output),
-        strategy=editblock.EditStrategy.AUTO,
-        title=title,
-    )
-
-
 def normalise_llm_file_headers(llm_output: str) -> str:
     """
     Clean common markdown/prose file labels before whole-file edit parsing.

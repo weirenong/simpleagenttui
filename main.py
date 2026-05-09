@@ -56,6 +56,7 @@ MAX_MEMORY_TEXT_LENGTH = 900
 MAX_RELEVANT_MEMORY_ITEMS = 8
 MAX_RELEVANT_ATTACHMENT_ITEMS = 8
 MAX_RELEVANT_WEB_ITEMS = 8
+MAX_ATTACH_COMPLETION_CANDIDATES = 80
 MAX_ATTACHMENT_CONTEXT_TOKEN_RATIO = 0.40
 MIN_ATTACHMENT_CONTEXT_TOKENS = 1_500
 MAX_ATTACHMENT_CONTEXT_TOKENS = 6_000
@@ -91,6 +92,7 @@ COMMANDS = {
     "/paste": "Paste text or image from the clipboard",
     "/clear": "Clear current session history",
     "/code": "Review/apply search & replace blocks from the last assistant reply",
+    "/workspace": "Reset workspace to terminal folder, or change it by path",
     "/model": "Show or change the Ollama chat model",
     "/embedding": "Show or change the Ollama embeddings model",
     "/vision": "Show or change the Ollama vision model",
@@ -127,6 +129,7 @@ COMMAND_USAGE = {
     "/workflow-install": "/workflow-install <path-to-workflow.md>",
     "/workflow-debug": "/workflow-debug",
     "/markup": "/markup",
+    "/workspace": "/workspace <path...>",
 }
 
 THINK_BLOCK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
@@ -202,6 +205,12 @@ def build_help_text() -> str:
 # -----------------------------
 
 class SlashCommandCompleter(Completer):
+    def __init__(self, get_workspace_dir) -> None:
+        if callable(get_workspace_dir):
+            self.get_workspace_dir = get_workspace_dir
+        else:
+            self.get_workspace_dir = lambda: Path(get_workspace_dir)
+
     def get_completions(self, document, complete_event: CompleteEvent):
         text = document.text_before_cursor
 
@@ -226,16 +235,20 @@ class SlashCommandCompleter(Completer):
     def get_attach_path_completions(self, text: str):
         argument_text = text[len("/attach "):]
         fragment = self.current_attach_fragment(argument_text)
-        project_dir = Path.cwd().resolve()
+        project_dir = self.get_workspace_dir().resolve()
 
         for path in list_attach_completion_candidates(project_dir, fragment):
-            relative_path = path.relative_to(project_dir).as_posix()
-            completion_text = shlex.quote(relative_path)
+            try:
+                display_path = path.relative_to(project_dir).as_posix()
+            except ValueError:
+                display_path = str(path)
+
+            completion_text = shlex.quote(display_path)
 
             yield Completion(
                 text=completion_text,
                 start_position=-len(fragment),
-                display=relative_path,
+                display=display_path,
                 display_meta="directory" if path.is_dir() else "file",
             )
 
@@ -248,17 +261,54 @@ class SlashCommandCompleter(Completer):
 
 def list_attach_completion_candidates(project_dir: Path, fragment: str) -> list[Path]:
     cleaned_fragment = fragment.strip().strip("'\"")
+    project_dir = project_dir.resolve()
+
+    if cleaned_fragment:
+        fragment_path = Path(cleaned_fragment).expanduser()
+    else:
+        fragment_path = Path("")
+
+    if fragment_path.is_absolute():
+        search_dir = fragment_path if fragment_path.is_dir() else fragment_path.parent
+        prefix = "" if fragment_path.is_dir() else fragment_path.name
+    else:
+        relative_parent = fragment_path.parent if str(fragment_path.parent) != "." else Path("")
+        search_dir = (project_dir / relative_parent).resolve()
+        prefix = "" if cleaned_fragment.endswith(("/", os.sep)) else fragment_path.name
+
+    try:
+        search_dir.relative_to(project_dir)
+    except ValueError:
+        if not fragment_path.is_absolute():
+            return []
+
+    if not search_dir.exists() or not search_dir.is_dir():
+        return []
+
     candidates: list[Path] = []
 
-    for path in project_dir.rglob("*"):
+    try:
+        children = sorted(search_dir.iterdir(), key=lambda path: path.name.lower())
+    except OSError:
+        return []
+
+    for path in children:
+        if len(candidates) >= MAX_ATTACH_COMPLETION_CANDIDATES:
+            break
+
+        if path.name.startswith("."):
+            continue
+
+        if prefix and not path.name.startswith(prefix):
+            continue
+
         if should_skip_attach_completion_candidate(project_dir, path):
             continue
 
         if path.is_file() and path.suffix.lower() not in SUPPORTED_ATTACHMENT_EXTENSIONS:
             continue
 
-        relative_path = path.relative_to(project_dir).as_posix()
-        if cleaned_fragment and not relative_path.startswith(cleaned_fragment):
+        if not path.is_dir() and not path.is_file():
             continue
 
         candidates.append(path)
@@ -266,9 +316,8 @@ def list_attach_completion_candidates(project_dir: Path, fragment: str) -> list[
     return sorted(
         candidates,
         key=lambda path: (
-            len(path.relative_to(project_dir).parts),
-            path.relative_to(project_dir).as_posix().lower(),
-            not path.is_file(),
+            not path.is_dir(),
+            path.name.lower(),
         ),
     )
 
@@ -403,9 +452,23 @@ def save_config(config: dict) -> None:
 
 
 class SimpleAgentTUI(TuiFormatter):
+    def redraw_after_workspace_change(self, message: str) -> None:
+        print()
+        self.clear_screen()
+        self.show_landing_page()
+        self.print_info(f"Workspace: {self.workspace_dir}")
+        self.print_info("Connected to Ollama.")
+        self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
+        self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
+        self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
+        self.print_dim("Type /help for commands. F1 to collapse/expand thinking. Type /exit to quit.\n")
+        self.print_info(message)
+        self.print_dim("Saved to config.json.")
+        self.print_dim("Session history, memory, attachments, web context, and screen cleared.")
+        print()
     def __init__(self) -> None:
-        self.project_dir = Path.cwd().resolve()
         self.config = load_config()
+        self.workspace_dir = self.load_workspace_dir()
         self.model = os.getenv("SIMPLEAGENT_MODEL") or self.config.get("model", DEFAULT_MODEL)
         self.host = os.getenv("OLLAMA_HOST") or self.config.get("host", "http://localhost:11434")
         self.embedding_model = self.config.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
@@ -530,7 +593,7 @@ class SimpleAgentTUI(TuiFormatter):
                 buffer.cursor_position = 0
 
         self.session = PromptSession(
-            completer=SlashCommandCompleter(),
+            completer=SlashCommandCompleter(lambda: self.workspace_dir),
             complete_while_typing=True,
             complete_style=CompleteStyle.COLUMN,
             editing_mode=EditingMode.EMACS,
@@ -551,6 +614,46 @@ class SimpleAgentTUI(TuiFormatter):
         )
 
         self.install_resize_handler()
+
+    def load_workspace_dir(self) -> Path:
+        configured_workspace = str(self.config.get("workspace") or "").strip()
+
+        if configured_workspace:
+            workspace_path = Path(configured_workspace).expanduser()
+            if workspace_path.exists() and workspace_path.is_dir():
+                return workspace_path.resolve()
+
+        return Path.cwd().resolve()
+
+    def set_workspace_dir(self, workspace_path_text: str) -> bool:
+        workspace_path_text = workspace_path_text.strip()
+
+        if not workspace_path_text:
+            self.workspace_dir = Path.cwd().resolve()
+            success_message = f"Workspace reset to terminal folder: {self.workspace_dir}"
+        else:
+            workspace_path = Path(workspace_path_text).expanduser()
+
+            if not workspace_path.exists():
+                print()
+                self.print_error(f"Workspace path does not exist: {workspace_path}")
+                print()
+                return True
+
+            if not workspace_path.is_dir():
+                print()
+                self.print_error(f"Workspace path is not a directory: {workspace_path}")
+                print()
+                return True
+
+            self.workspace_dir = workspace_path.resolve()
+            success_message = f"Workspace changed to: {self.workspace_dir}"
+
+        self.config["workspace"] = str(self.workspace_dir)
+        save_config(self.config)
+        self.clear_session_state()
+        self.redraw_after_workspace_change(success_message)
+        return True
 
     def review_last_code_blocks(self, strategy: "EditStrategy | None" = None) -> None:
         if not getattr(self, "last_visible_reply", ""):
@@ -804,7 +907,7 @@ class SimpleAgentTUI(TuiFormatter):
             return
 
         self.refresh_model_context_lengths()
-        self.print_info(f"Workspace: {self.project_dir}")
+        self.print_info(f"Workspace: {self.workspace_dir}")
         self.print_info("Connected to Ollama.")
         self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
         self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
@@ -2412,7 +2515,7 @@ class SimpleAgentTUI(TuiFormatter):
 
         self.clear_screen()
         self.show_landing_page()
-        self.print_info(f"Workspace: {self.project_dir}")
+        self.print_info(f"Workspace: {self.workspace_dir}")
         self.print_info("Connected to Ollama.")
         self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
         self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
@@ -2459,6 +2562,9 @@ class SimpleAgentTUI(TuiFormatter):
                 self.print_info(f"Current version: {VERSION}")
                 print()
             return True
+
+        if command == "/workspace":
+            return self.set_workspace_dir(arg)
 
         if command == "/model":
             if not arg:
@@ -2559,31 +2665,12 @@ class SimpleAgentTUI(TuiFormatter):
             return True
 
         if command == "/clear":
-            self.messages.clear()
-            self.memory_items.clear()
-            self.memory_index.clear()
-            self.attachment_context_items.clear()
-            self.image_attachment_context_items.clear()
-            self.text_attachment_full_context_items.clear()
-            self.web_context_items.clear()
-            self.web_sources.clear()
-            self.web_index.clear()
-            self.last_workflow_messages.clear()
-            self.last_thinking = ""
-            self.last_visible_reply = ""
-            self.show_thinking = False
-            self.streaming_thinking_line_count = 0
-            self.streaming_thinking_last_block = ""
-            self.streaming_thinking_closed = True
-            self.reset_streaming_reply_buffer()
-            self.delete_attachment_files()
-            self.attachments.clear()
-            self.next_input_prefill = ""
+            self.clear_session_state()
 
             with patch_stdout(raw=True):
                 self.clear_screen()
                 self.show_landing_page()
-                self.print_info(f"Workspace: {self.project_dir}")
+                self.print_info(f"Workspace: {self.workspace_dir}")
                 self.print_info("Connected to Ollama.")
                 self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
                 self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
@@ -2606,6 +2693,28 @@ class SimpleAgentTUI(TuiFormatter):
 
         command, arg = raw.split(" ", 1)
         return command.strip(), arg.strip()
+
+    def clear_session_state(self) -> None:
+        self.messages.clear()
+        self.memory_items.clear()
+        self.memory_index.clear()
+        self.attachment_context_items.clear()
+        self.image_attachment_context_items.clear()
+        self.text_attachment_full_context_items.clear()
+        self.web_context_items.clear()
+        self.web_sources.clear()
+        self.web_index.clear()
+        self.last_workflow_messages.clear()
+        self.last_thinking = ""
+        self.last_visible_reply = ""
+        self.show_thinking = False
+        self.streaming_thinking_line_count = 0
+        self.streaming_thinking_last_block = ""
+        self.streaming_thinking_closed = True
+        self.reset_streaming_reply_buffer()
+        self.delete_attachment_files()
+        self.attachments.clear()
+        self.next_input_prefill = ""
 
     # -----------------------------
     # Attachments
@@ -2659,7 +2768,17 @@ class SimpleAgentTUI(TuiFormatter):
             print()
             return []
 
-        return [Path(part).expanduser() for part in parts]
+        paths: list[Path] = []
+
+        for part in parts:
+            path = Path(part).expanduser()
+
+            if not path.is_absolute():
+                path = self.workspace_dir / path
+
+            paths.append(path)
+
+        return paths
 
     def add_attachment(self, path: Path) -> bool:
         path = path.expanduser()
