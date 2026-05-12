@@ -1377,7 +1377,7 @@ class UnifiedDiffEditor:
         try:
             result = self._apply_patch_by_hunk_numbering(original, diff_text)
             return result
-        except Exception:
+        except Exception as e:
             # Fall back to method 2 if hunk numbering fails
             pass
 
@@ -1436,7 +1436,6 @@ class UnifiedDiffEditor:
                     saw_change = True
 
             # Apply the changes at the specified position
-            # Adjust for the fact that we're working with 0-based indices
             if removals or additions:
                 # Calculate the actual position in the file
                 pos = old_start
@@ -1451,7 +1450,8 @@ class UnifiedDiffEditor:
                 if old_count > 0:
                     # Remove old lines
                     end_pos = min(pos + old_count, len(result))
-                    del result[pos:end_pos]
+                    if end_pos > pos:
+                        del result[pos:end_pos]
                     
                 # Insert new lines
                 result[pos:pos] = additions
@@ -1526,7 +1526,8 @@ class UnifiedDiffEditor:
                 if old_count > 0:
                     # Remove old lines
                     end_pos = min(pos + old_count, len(result))
-                    del result[pos:end_pos]
+                    if end_pos > pos:
+                        del result[pos:end_pos]
                     
                 # Insert new lines
                 result[pos:pos] = additions
