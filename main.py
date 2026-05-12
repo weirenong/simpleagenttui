@@ -2561,7 +2561,7 @@ class SimpleAgentTUI(TuiFormatter):
         if command == "/workspace":
             return self.set_workspace_dir(arg)
 
-        if command == "/model":
+        if command == "/model-chat":
             if not arg:
                 if self.model_num_context is None:
                     self.model_num_context = self.get_ollama_model_num_context(self.model)
@@ -2573,7 +2573,7 @@ class SimpleAgentTUI(TuiFormatter):
             self.set_model(arg, persist=True)
             return True
 
-        if command == "/embedding":
+        if command == "/model-embedding":
             if not arg:
                 if self.embedding_model_num_context is None:
                     self.embedding_model_num_context = self.get_ollama_model_num_context(self.embedding_model)
@@ -2587,7 +2587,7 @@ class SimpleAgentTUI(TuiFormatter):
             self.set_embedding_model(arg, persist=True)
             return True
 
-        if command == "/vision":
+        if command == "/model-vision":
             if not arg:
                 if self.vision_model_num_context is None:
                     self.vision_model_num_context = self.get_ollama_model_num_context(self.vision_model)
