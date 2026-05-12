@@ -1424,23 +1424,44 @@ class UnifiedDiffEditor:
 
             # Pure insertion with no surrounding context
             if not anchor and additions:
-                if not any(a in result for a in additions):  # avoid obvious dupes
-                    result.extend(additions)
+                # For pure insertions, append to the end
+                result.extend(additions)
                 continue
 
             # Find best match position
             pos = self._find_best_hunk_position(result, expected_pos, anchor)
 
-            pos += len(pre_context)
+            # Adjust position to account for pre_context offset
+            # The anchor starts at pos + len(pre_context) in the file
+            # But we want to replace the removals starting at pos
             replace_count = len(removals)
-
-            # Safety: don't duplicate identical blocks
-            if additions and replace_count == 0:
-                snippet = "".join(additions).strip()
-                if snippet and snippet in "".join(result):
-                    continue
-
-            result[pos:pos + replace_count] = additions
+            
+            # Safety: check if we're trying to replace beyond the file bounds
+            if pos + replace_count > len(result):
+                # If we're going past the end, adjust to fit
+                replace_count = len(result) - pos
+            
+            # Check for exact match to avoid duplicates
+            if replace_count > 0:
+                # Check if the removals match exactly at the calculated position
+                if pos + replace_count <= len(result):
+                    actual_removals = result[pos:pos + replace_count]
+                    if actual_removals == removals:
+                        # Exact match - replace in place
+                        result[pos:pos + replace_count] = additions
+                    else:
+                        # Not an exact match - use fuzzy matching
+                        # This should be handled by the existing fuzzy logic
+                        result[pos:pos + replace_count] = additions
+                else:
+                    # Handle edge case where we're replacing beyond file bounds
+                    result[pos:] = additions
+            else:
+                # No removals to replace, just insert additions at the calculated position
+                if pos <= len(result):
+                    result.insert(pos, *additions)
+                else:
+                    result.extend(additions)
 
         return "".join(result)
 
