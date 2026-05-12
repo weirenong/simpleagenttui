@@ -2623,14 +2623,6 @@ class SimpleAgentTUI(TuiFormatter):
             self.show_models()
             return True
 
-        if command == "/select-model":
-            self.select_model()
-            return True
-
-        if command == "/select-embedding":
-            self.select_embedding_model()
-            return True
-
         if command == "/persona":
             self.open_persona_manager()
             return True
@@ -3189,73 +3181,6 @@ class SimpleAgentTUI(TuiFormatter):
             self.print_info(
                 f"Vision model changed to: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}"
             )
-
-    def select_model(self) -> None:
-        try:
-            models = self.client.list_models()
-        except Exception as exc:
-            self.print_error(f"Could not list models: {exc}")
-            return
-
-        if not models:
-            self.print_dim("No Ollama models found. Try: ollama pull nemotron-3-nano:4b")
-            return
-
-        print()
-        print(self.bold("Select an Ollama model:"))
-        for index, model in enumerate(models, start=1):
-            marker = "*" if model == self.model else " "
-            print(f"  {index:02d}. {marker} {model}")
-
-        print()
-        choice = input(self.blue("model number > ")).strip()
-        if not choice.isdigit():
-            self.print_error("Invalid selection.")
-            return
-
-        index = int(choice)
-        if index < 1 or index > len(models):
-            self.print_error("Invalid selection.")
-            return
-
-        self.set_model(models[index - 1], persist=True)
-
-    def select_embedding_model(self) -> None:
-        try:
-            models = self.client.list_models()
-        except Exception as exc:
-            self.print_error(f"Could not list models: {exc}")
-            return
-
-        if not models:
-            self.print_dim(f"No Ollama models found. Try: ollama pull {DEFAULT_EMBEDDING_MODEL}")
-            return
-
-        print()
-        print(self.bold("Select an Ollama embeddings model:"))
-        for index, model in enumerate(models, start=1):
-            markers = []
-            if model == self.model:
-                markers.append("chat")
-            if model == self.embedding_model:
-                markers.append("embed")
-            if model == self.vision_model:
-                markers.append("vision")
-            marker_text = f" [{' / '.join(markers)}]" if markers else ""
-            print(f"  {index:02d}. {model}{marker_text}")
-
-        print()
-        choice = input(self.blue("embedding model number > ")).strip()
-        if not choice.isdigit():
-            self.print_error("Invalid selection.")
-            return
-
-        index = int(choice)
-        if index < 1 or index > len(models):
-            self.print_error("Invalid selection.")
-            return
-
-        self.set_embedding_model(models[index - 1], persist=True)
 
     def show_models(self) -> None:
         try:
