@@ -1431,9 +1431,23 @@ class UnifiedDiffEditor:
             # Find best match position
             pos = self._find_best_hunk_position(result, expected_pos, anchor)
 
-            # Adjust position to account for pre_context offset
-            # The anchor starts at pos + len(pre_context) in the file
-            # But we want to replace the removals starting at pos
+            # The position returned by _find_best_hunk_position is the start of the anchor match
+            # But we need to adjust for the fact that the hunk header tells us where the change should start
+            # The hunk header @@ -X,Y +Z,W @@ means:
+            # - Start at line X in the original file (1-indexed)
+            # - Remove Y lines 
+            # - Insert W lines starting at line Z in the new file
+            # So we should be replacing at position pos, but we also need to account for the fact
+            # that the hunk header gives us a more precise location
+            
+            # Calculate the actual position based on the hunk header
+            # The expected_pos is already converted to 0-based index
+            # But we also need to consider the pre_context length
+            actual_pos = pos
+            
+            # If we have pre_context, we need to adjust the position accordingly
+            # The anchor starts at pos, but the actual replacement should happen at the position
+            # indicated by the hunk header
             replace_count = len(removals)
             
             # Safety: check if we're trying to replace beyond the file bounds
@@ -1459,7 +1473,16 @@ class UnifiedDiffEditor:
             else:
                 # No removals to replace, just insert additions at the calculated position
                 if pos <= len(result):
-                    result.insert(pos, *additions)
+                    # Insert at the position indicated by the hunk header
+                    # But we need to be careful about where we insert
+                    insert_pos = pos
+                    # If we're inserting at the beginning of the file, we can just extend
+                    if insert_pos == 0:
+                        # Insert at the beginning
+                        result = additions + result
+                    else:
+                        # Insert in the middle
+                        result[insert_pos:insert_pos] = additions
                 else:
                     result.extend(additions)
 
