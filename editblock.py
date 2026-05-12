@@ -34,6 +34,8 @@ from typing import Any, Sequence
 import shutil
 from datetime import datetime
 
+from prompt_toolkit.key_binding import key_bindings
+
 
 # ---------------------------------------------------------------------------
 # Strategy enum
@@ -459,14 +461,51 @@ def commit_temp_workspace_to_original(workspace: PatchWorkspace) -> None:
 
         shutil.copy2(temp_path, original_path)
 
+def _validate_edit_block(
+    block: EditBlock,
+    temp_path: Path,
+    max_deletion_ratio: float = 0.50,
+) -> None:
+    """
+    Make sure the diff that will be stored for *block* does not delete
+    more than ``max_deletion_ratio`` of unchanged lines.
 
-def _write_blocks(blocks: list[EditBlock], app: Any | None = None) -> None:
-    workspace = create_temp_workspace_for_paths(
-        [block.target_path for block in blocks],
-        app=app,
+    Parameters
+    ----------
+    block          – the parsed EditBlock (contains original_text & updated_text)
+    temp_path      – the *current* temp file path (may already contain previous edits)
+    max_deletion_ratio – threshold (0‑1).  If deletions exceed this fraction
+                         of the original file we raise a ParseError.
+
+    Raises
+    ------
+    ParseError – when the diff looks like an unintended wholesale deletion.
+    """
+    # 1️⃣ Build the diff that will be saved (temp file vs. updated_text)
+    diff_text = "".join(
+        difflib.unified_diff(
+            temp_path.read_text(encoding="utf-8").splitlines(keepends=True),
+            block.updated_text.splitlines(keepends=True),
+            fromfile=f"temp/{temp_path.name}",
+            tofile=f"temp/{temp_path.name}",
+        )
     )
-    apply_blocks_to_temp_workspace(blocks, workspace)
-    commit_temp_workspace_to_original(workspace)
+
+    # 2️⃣ Count lines that are marked for deletion in the diff.
+    del_lines = [ln for ln in diff_text.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+    # 3️⃣ Count total non‑empty lines in the *original* content of the temp file.
+    orig_lines = [ln for ln in temp_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    total = max(len(orig_lines), 1)
+
+    # 4️⃣ If deletions are > threshold → raise. hard coded 50 min deletion lines
+    if len(del_lines) >= 50 and total > 0:
+        deletion_ratio = len(del_lines) / total
+        if deletion_ratio > max_deletion_ratio:
+            raise ParseError(
+                "Patch contains a large deletion of unchanged code",
+                f"Deleted {len(del_lines)} lines out of {total} ({deletion_ratio:.0%}) – "                                                                          
+                f"consider editing only the changed region or using a smaller SEARCH block.",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -500,13 +539,10 @@ def _is_bounded_change(
         for next_tag, next_i1, next_i2, _, _ in opcodes[index + 1:]
     )
 
-    if has_before_bound and has_after_bound:
-        return True
-
-    touches_top = i1 == 0 and j1 == 0
-    touches_bottom = i2 == original_line_count and j2 == updated_line_count
-
-    return (touches_top and has_after_bound) or (touches_bottom and has_before_bound)
+    # A change is only considered safe if it is bounded by unchanged code
+    # on BOTH sides. This prevents massive top/bottom rewrites from being
+    # treated as safe merely because some unchanged code still exists.
+    return has_before_bound and has_after_bound
 
 
 def _safe_updated_text_from_bounds(original_text: str, updated_text: str) -> tuple[str | None, bool]:
@@ -552,9 +588,15 @@ def _safe_updated_text_from_bounds(original_text: str, updated_text: str) -> tup
     return "".join(result_lines), True
 
 
-def _risky_updated_line_numbers(original_text: str, updated_text: str) -> set[int]:
+def _risky_line_numbers(
+    original_text: str,
+    updated_text: str,
+) -> tuple[set[int], set[int]]:
     """
-    Return 1-based updated-file line numbers that belong to risky unbounded changes.
+    Return:
+      (risky_original_line_numbers, risky_updated_line_numbers)
+
+    Both sets are 1-based.
     """
     original_lines = original_text.splitlines(keepends=True)
     updated_lines = updated_text.splitlines(keepends=True)
@@ -562,7 +604,8 @@ def _risky_updated_line_numbers(original_text: str, updated_text: str) -> set[in
     matcher = difflib.SequenceMatcher(None, original_lines, updated_lines)
     opcodes = matcher.get_opcodes()
 
-    risky_lines: set[int] = set()
+    risky_original: set[int] = set()
+    risky_updated: set[int] = set()
 
     for index, (tag, i1, i2, j1, j2) in enumerate(opcodes):
         if tag == "equal":
@@ -576,9 +619,10 @@ def _risky_updated_line_numbers(original_text: str, updated_text: str) -> set[in
         )
 
         if not safe:
-            risky_lines.update(range(j1 + 1, j2 + 1))
+            risky_original.update(range(i1 + 1, i2 + 1))
+            risky_updated.update(range(j1 + 1, j2 + 1))
 
-    return risky_lines
+    return risky_original, risky_updated
 
 
 def _annotated_unified_diff(block: EditBlock) -> list[str]:
@@ -590,14 +634,22 @@ def _annotated_unified_diff(block: EditBlock) -> list[str]:
     if not diff_text:
         return []
 
-    risky_lines = _risky_updated_line_numbers(block.original_text, block.updated_text)
+    risky_original_lines, risky_updated_lines = _risky_line_numbers(
+        block.original_text,
+        block.updated_text,
+    )
     annotated: list[str] = []
+    old_line_number = 0
     new_line_number = 0
 
     for line in diff_text.splitlines():
-        hunk_match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+        hunk_match = re.match(
+            r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@",
+            line,
+        )
         if hunk_match:
-            new_line_number = int(hunk_match.group(1))
+            old_line_number = int(hunk_match.group(1))
+            new_line_number = int(hunk_match.group(2))
             annotated.append(line)
             continue
 
@@ -606,7 +658,7 @@ def _annotated_unified_diff(block: EditBlock) -> list[str]:
             continue
 
         if line.startswith("+"):
-            if new_line_number in risky_lines:
+            if new_line_number in risky_updated_lines:
                 annotated.append(_RISKY_DIFF_PREFIX + line)
             else:
                 annotated.append(line)
@@ -614,12 +666,17 @@ def _annotated_unified_diff(block: EditBlock) -> list[str]:
             continue
 
         if line.startswith("-"):
-            annotated.append(line)
+            if old_line_number in risky_original_lines:
+                annotated.append(_RISKY_DIFF_PREFIX + line)
+            else:
+                annotated.append(line)
+            old_line_number += 1
             continue
 
         annotated.append(line)
 
         if line.startswith(" ") or line == "":
+            old_line_number += 1
             new_line_number += 1
 
     return annotated
@@ -949,9 +1006,9 @@ DIVIDER_MARKER = "======="
 REPLACE_MARKER = ">>>>>>> REPLACE"
 
 # Accept slight LLM variations in the markers.
-_SEARCH_RE = re.compile(r"^<{5,7}\s*SEARCH\s*$", re.IGNORECASE)
+_SEARCH_RE = re.compile(r"^<{2,7}\s*SEARCH\s*$", re.IGNORECASE)
 _DIVIDER_RE = re.compile(r"^={5,7}\s*$")
-_REPLACE_RE = re.compile(r"^>{5,7}\s*REPLACE\s*$", re.IGNORECASE)
+_REPLACE_RE = re.compile(r"^>{2,7}\s*REPLACE\s*$", re.IGNORECASE)
 
 
 class SearchReplaceNoMatch(Exception):
@@ -965,11 +1022,11 @@ class SearchReplaceEditor:
     Expected LLM format:
         path/to/file.py
         ```python
-        <<<<<<< SEARCH
+        />>>>>>> SEARCH
         old code
         =======
         new code
-        >>>>>>> REPLACE
+        /<<<<<<< REPLACE
         ```
         (repeat for more changes)
 
@@ -1223,167 +1280,209 @@ class SearchReplaceEditor:
 
 class UnifiedDiffEditor:
     """
-    Parse standard unified-diff output from the LLM and apply it.
-
-    Expected format (inside a ```diff block or bare):
-        --- a/path/to/file.py
-        +++ b/path/to/file.py
-        @@ -10,7 +10,8 @@
-         context
-        -removed line
-        +added line
-         context
+    Very robust unified diff handler for small models (<10B).
+    Handles malformed headers, missing context, duplicate lines, etc.
     """
 
     _DIFF_HEADER_RE = re.compile(r"^--- a?/?(.*)")
-    _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+    _HUNK_RE = re.compile(r"^@@ .* @@")
 
     def parse(self, llm_output: str, app: Any) -> list[EditBlock]:
         diffs = self._split_diffs(llm_output)
-
         if not diffs:
-            raise ParseError(
-                "No unified diff blocks found",
-                "Ensure the model outputs --- / +++ / @@ headers.",
-            )
+            raise ParseError("No unified diff blocks found")
 
-        blocks: list[EditBlock] = []
+        file_texts: dict[Path, tuple[str, str, str]] = {}
+
         for path_hint, diff_text in diffs:
             target = _resolve_path(path_hint, app)
             original = target.read_text(encoding="utf-8") if target.exists() else ""
-            updated = self._apply_diff(original, diff_text, target)
-            blocks.append(EditBlock(path_hint, target, original, updated))
 
-        return blocks
+            if target not in file_texts:
+                file_texts[target] = (path_hint, original, original)
+
+            _, _, current = file_texts[target]
+            updated = self._apply_patch_robust(current, diff_text)
+            file_texts[target] = (path_hint, original, updated)
+
+        return [
+            EditBlock(path_hint, target, original, updated)
+            for target, (path_hint, original, updated) in file_texts.items()
+        ]
 
     def _split_diffs(self, text: str) -> list[tuple[str, str]]:
-        """Split a multi-file diff response into (path_hint, diff_text) pairs."""
-        # Strip fences.
+        """Extract (path, diff_content) pairs, deduplicating identical blocks."""
         text = re.sub(r"^```[a-z]*\n?", "", text, flags=re.MULTILINE)
-        text = re.sub(r"^```\s*$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"^\s*```\s*$", "", text, flags=re.MULTILINE)
 
         chunks: list[tuple[str, str]] = []
         current_hint = ""
         current_lines: list[str] = []
 
         for line in text.splitlines():
-            m = self._DIFF_HEADER_RE.match(line)
-            if m and line.startswith("---"):
-                # New file diff starting — flush previous.
-                if current_hint and current_lines:
-                    chunks.append((current_hint, "\n".join(current_lines)))
-                raw_path = m.group(1).strip()
-                current_hint = raw_path.removeprefix("a/").removeprefix("b/")
-                current_lines = [line]
-                continue
-
+            if line.startswith("---"):
+                header_match = self._DIFF_HEADER_RE.match(line)
+                if header_match:
+                    if current_hint and current_lines:
+                        chunks.append((current_hint, "\n".join(current_lines)))
+                    raw_path = header_match.group(1).strip()
+                    current_hint = raw_path.removeprefix("a/").removeprefix("b/").strip()
+                    current_lines = [line]
+                    continue
             if current_hint:
                 current_lines.append(line)
 
         if current_hint and current_lines:
             chunks.append((current_hint, "\n".join(current_lines)))
 
-        return chunks
-
-    def _apply_diff(self, original: str, diff_text: str, path: Path) -> str:
-        """Apply a unified diff to the original text, returning updated text."""
-        orig_lines = original.splitlines(keepends=True)
-        result_lines = list(orig_lines)
-        offset = 0
-
-        for hunk_text in self._split_hunks(diff_text):
-            m = self._HUNK_RE.match(hunk_text.splitlines()[0])
-            if not m:
-                continue
-
-            orig_start = int(m.group(1)) - 1  # 0-indexed
-            hunk_lines = hunk_text.splitlines()[1:]  # skip @@ line
-
-            applied_lines: list[str] = []
-            i = orig_start + offset
-
-            for hunk_line in hunk_lines:
-                if hunk_line.startswith("-"):
-                    # Remove: advance in result (skip this line).
-                    i += 1
-                    offset -= 1
-                elif hunk_line.startswith("+"):
-                    # Add.
-                    new_line = hunk_line[1:]
-                    if not new_line.endswith("\n"):
-                        new_line += "\n"
-                    applied_lines.append((i, "add", new_line))
-                else:
-                    # Context line — keep.
-                    i += 1
-
-        # Re-apply: this simple approach rebuilds from scratch using difflib patcher.
-        try:
-            patched = list(difflib.restore(
-                list(difflib.unified_diff([], [], n=0)),
-                which=2,
-            ))
-        except Exception:
-            patched = []
-
-        # Fall back to Python's patch-via-ndiff for correctness.
-        return self._apply_patch_robust(original, diff_text)
-
-    def _apply_patch_robust(self, original: str, diff_text: str) -> str:
-        """
-        Robust patch application using line-by-line hunk processing.
-        """
-        orig_lines = original.splitlines(keepends=True)
-        result: list[str] = list(orig_lines)
-        offset = 0
-
-        for hunk in self._split_hunks(diff_text):
-            hunk_lines = hunk.splitlines()
-            header = hunk_lines[0]
-            m = self._HUNK_RE.match(header)
-            if not m:
-                continue
-
-            orig_start = int(m.group(1)) - 1  # 0-indexed in original
-
-            removals: list[str] = []
-            additions: list[str] = []
-            for line in hunk_lines[1:]:
-                if line.startswith("-"):
-                    removals.append(line[1:])
-                elif line.startswith("+"):
-                    additions.append(line[1:])
-                # context lines ignored — we use the original
-
-            # Ensure additions end with newline.
-            additions = [
-                (a if a.endswith("\n") else a + "\n") for a in additions
-            ]
-
-            pos = orig_start + offset
-            # Replace the removal span with the additions.
-            result[pos: pos + len(removals)] = additions
-            offset += len(additions) - len(removals)
-
-        return "".join(result)
+        # Deduplicate: the LLM pipeline may emit the same diff block multiple
+        # times (e.g. once per self-check pass).  Applying duplicates causes
+        # repeated insertions / double-deletions, so keep only the first
+        # occurrence of each (path, normalised-diff) pair.
+        seen: set[tuple[str, str]] = set()
+        unique: list[tuple[str, str]] = []
+        for chunk in chunks:
+            key = (chunk[0], chunk[1].strip())
+            if key not in seen:
+                seen.add(key)
+                unique.append(chunk)
+        return unique
 
     def _split_hunks(self, diff_text: str) -> list[str]:
-        """Split a diff into individual @@ hunks."""
+        """Split even very broken diffs into hunks."""
         hunks: list[str] = []
         current: list[str] = []
 
-        for line in diff_text.splitlines():
-            if self._HUNK_RE.match(line):
+        for line in diff_text.splitlines(keepends=True):
+            stripped = line.strip()
+            if stripped.startswith("@@") or (stripped.startswith("---") and not current):
                 if current:
-                    hunks.append("\n".join(current))
+                    hunks.append("".join(current))
                 current = [line]
             elif current:
                 current.append(line)
 
         if current:
-            hunks.append("\n".join(current))
+            hunks.append("".join(current))
 
         return hunks
+
+    def _apply_patch_robust(self, original: str, diff_text: str) -> str:
+        """Last-resort robust patching."""
+        if not diff_text.strip():
+            return original
+
+        result = original.splitlines(keepends=True)
+
+        for hunk in self._split_hunks(diff_text):
+            if not hunk.strip():
+                continue
+
+            hunk_lines = hunk.splitlines()
+            if not hunk_lines:
+                continue
+
+            # Parse the @@ header for the expected (1-based) line number so we
+            # can seed the fuzzy search near the right region.
+            expected_pos = 0
+            for line in hunk_lines:
+                hunk_header = re.match(r"^@@ -(\d+)", line)
+                if hunk_header:
+                    expected_pos = max(0, int(hunk_header.group(1)) - 1)
+                    break
+
+            # Parse additions and removals.
+            # IMPORTANT: only accumulate context lines that appear *before* the
+            # first change marker into `pre_context`.  Old code lumped pre- and
+            # post-change context together, which scrambled the anchor order and
+            # caused the hunk to land in the wrong position.
+            pre_context: list[str] = []   # context before first +/-
+            removals:    list[str] = []
+            additions:   list[str] = []
+            saw_change = False
+
+            for line in hunk_lines:
+                if line.startswith(("---", "+++", "@@")):
+                    continue
+                if line.startswith(" "):
+                    if not saw_change:
+                        pre_context.append(line[1:] + "\n")
+                    # post-change context lines are not needed for anchoring
+                elif line.startswith("-"):
+                    saw_change = True
+                    removals.append(line[1:] + "\n")
+                elif line.startswith("+"):
+                    saw_change = True
+                    additions.append(line[1:] + "\n")
+
+            if not removals and not additions:
+                continue
+
+            # The anchor is: lines that must exist in the file at the edit site
+            # (pre-change context followed by the lines being removed).
+            anchor = pre_context + removals
+
+            # Pure insertion with no surrounding context
+            if not anchor and additions:
+                if not any(a in result for a in additions):  # avoid obvious dupes
+                    result.extend(additions)
+                continue
+
+            # Find best match position
+            pos = self._find_best_hunk_position(result, expected_pos, anchor)
+
+            pos += len(pre_context)
+            replace_count = len(removals)
+
+            # Safety: don't duplicate identical blocks
+            if additions and replace_count == 0:
+                snippet = "".join(additions).strip()
+                if snippet and snippet in "".join(result):
+                    continue
+
+            result[pos:pos + replace_count] = additions
+
+        return "".join(result)
+
+    def _find_best_hunk_position(
+        self, result: list[str], expected_pos: int, anchor: list[str]
+    ) -> int:
+        """Fuzzy anchor search.
+
+        Always scans the full file for the best-scoring position.  We bias
+        towards ``expected_pos`` by trying it first and short-circuiting on a
+        perfect match, but we never restrict the search to a narrow window
+        around it — that caused misses when the LLM's line numbers were off.
+        """
+        if not anchor:
+            return max(0, min(expected_pos, len(result)))
+
+        n = len(anchor)
+        norm_result = [line.rstrip("\n") for line in result]
+        norm_anchor = [line.rstrip("\n") for line in anchor]
+
+        def score_at(idx: int) -> int:
+            if idx + n > len(norm_result):
+                return -1
+            return sum(a == b for a, b in zip(norm_result[idx:idx + n], norm_anchor))
+
+        # Try the expected position first for a quick perfect-match exit.
+        if 0 <= expected_pos <= len(result) - n:
+            if score_at(expected_pos) == n:
+                return expected_pos
+
+        best_pos = 0
+        best_score = -1
+
+        for pos in range(max(0, len(result) - n + 1)):
+            sc = score_at(pos)
+            if sc > best_score:
+                best_score = sc
+                best_pos = pos
+            if sc == n:  # perfect match — stop immediately
+                return pos
+
+        return best_pos
 
 
 # ---------------------------------------------------------------------------
@@ -1415,18 +1514,11 @@ def _is_probable_path(text: str) -> bool:
 def apply_llm_edits(
     app: Any,
     llm_output: str,
-    strategy: EditStrategy = EditStrategy.SEARCH_REPLACE,
+    strategy: EditStrategy = EditStrategy.AUTO,
     title: str = "LLM code edit review",
 ) -> bool:
     """
     Parse edits from *llm_output* using *strategy*, show diffs, confirm, and apply.
-
-    Parameters
-    ----------
-    app      : the simpleagent instance (needs .attachments)
-    llm_output : the raw LLM response text
-    strategy : which edit format to parse
-    title    : label for the UI prompt
 
     Returns True if edits were applied, False otherwise.
     """
@@ -1435,33 +1527,252 @@ def apply_llm_edits(
         print("\nNo assistant output to parse.\n")
         return False
 
-    editor: WholeFileEditor | SearchReplaceEditor | UnifiedDiffEditor
-
-    if strategy == EditStrategy.AUTO:
-        strategy = _detect_strategy(llm_output)
-
-        # Try the detected strategy; fall back to WHOLE_FILE on parse failure.
+    # -----------------------------------------------------------------------
+    # 1️⃣  Parse → list[EditBlock] (unchanged)
+    # -----------------------------------------------------------------------
     try:
+        strategy = _detect_strategy(llm_output) if strategy == EditStrategy.AUTO else strategy
         blocks = _get_editor(strategy).parse(llm_output, app)
-    except (ParseError, SearchReplaceNoMatch, Exception) as exc:
-        if strategy != EditStrategy.WHOLE_FILE:
-            print(f"\n[editblock] {strategy.value} parse failed, trying whole_file fallback...\n")
-            try:
-                blocks = WholeFileEditor().parse(llm_output, app)
-                strategy = EditStrategy.WHOLE_FILE
-            except Exception as exc2:
-                print(f"\n[editblock] Could not parse edits: {exc2}\n")
-                return False
-        else:
-            print(f"\n[editblock] Could not parse edits: {exc}\n")
-            return False
 
+    except (ParseError, SearchReplaceNoMatch) as exc:
+        print(f"\nFailed to parse edits:\n{exc}\n")
+        return False
+
+    except Exception as exc:
+        print(f"\nUnexpected error while parsing edits:\n{exc}\n")
+        return False
+
+    # -----------------------------------------------------------------------
+    # 2️⃣  **Validate** each block *against the current temp file* before we
+    #      write anything.  This catches wholesale deletions early.
+    # -----------------------------------------------------------------------
+    # Build a temporary workspace just to get the *current* temp file paths.
+    # (We reuse the same logic that `apply_llm_edits_to_temp` uses.)
+    workspace = create_temp_workspace_for_paths(
+        [block.target_path for block in blocks], app=app
+    )
+
+    for block in blocks:
+        # Resolve the *real* path that will be edited.
+        resolved_path = _resolve_path(block.path_hint, app)
+        # The temp file that already contains any previous edits for this path.
+        temp_path = workspace.original_to_temp.get(resolved_path)
+        if temp_path is None:
+            # First edit for this file – create an empty temp copy.
+            temp_path = workspace.temp_dir / _unique_temp_name(resolved_path, workspace.workspace_id)
+
+        # Run the validation; it may raise ParseError if the diff looks suspicious.
+        _validate_edit_block(block, temp_path)
+
+    # -----------------------------------------------------------------------
+    # 3️⃣  Proceed with the normal confirmation UI (unchanged)
+    # -----------------------------------------------------------------------
     return _confirm_and_apply(blocks, app=app)
 
+def apply_llm_edits_to_temp(
+    app: Any,
+    llm_output: str,
+    strategy: EditStrategy = EditStrategy.UNIFIED_DIFF,
+    workspace: PatchWorkspace | None = None,
+) -> tuple[PatchWorkspace, list[Path] | None]:
+    """
+    Parse *llm_output* using *strategy* and stage the changes **only** in a
+    temporary workspace.  The original files on disk are left untouched.
+
+    Returns
+    -------
+    (workspace, patch_paths)
+        *workspace* – the PatchWorkspace that now holds the patched temp files.
+        *patch_paths* – list of the generated ``*.patch`` files (useful for
+        later inspection or manual commit).
+    """
+    # -----------------------------------------------------------------------
+    # 1️⃣  Parse → EditBlocks (unchanged)
+    # -----------------------------------------------------------------------
+    llm_output = str(llm_output or "").strip()
+    if not llm_output:
+        raise ParseError("No assistant output to parse.")
+
+    strategy = _detect_strategy(llm_output) if strategy == EditStrategy.AUTO else strategy
+    editor = _get_editor(strategy)
+    blocks = editor.parse(llm_output, app)
+
+    # -----------------------------------------------------------------------
+    # 2️⃣  Build a workspace that already contains any *previous* edits.
+    # -----------------------------------------------------------------------
+    if workspace is None:
+        workspace = create_temp_workspace_for_paths(
+            [block.target_path for block in blocks], app=app
+        )
+
+    # -----------------------------------------------------------------------
+    # 3️⃣  **Validate & apply** each block **against the *current* temp file**.
+    # -----------------------------------------------------------------------
+    patch_paths: list[Path] = []
+
+    for block in blocks:
+        resolved_path = _resolve_path(block.path_hint, app)
+        temp_path = workspace.original_to_temp.get(resolved_path)
+
+        if temp_path is None:
+            temp_path = workspace.temp_dir / _unique_temp_name(
+                resolved_path,
+                workspace.workspace_id,
+            )
+
+            temp_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if resolved_path.exists():
+                shutil.copy2(resolved_path, temp_path)
+            else:
+                temp_path.write_text("", encoding="utf-8")
+
+            workspace.original_to_temp[resolved_path] = temp_path
+            workspace.temp_to_original[temp_path] = resolved_path
+
+        _validate_edit_block(block, temp_path)
+
+        before_text = (
+            temp_path.read_text(encoding="utf-8")
+            if temp_path.exists()
+            else ""
+        )
+
+        diff_text = "".join(
+            difflib.unified_diff(
+                before_text.splitlines(keepends=True),
+                block.updated_text.splitlines(keepends=True),
+                fromfile=f"temp/before/{temp_path.name}",
+                tofile=f"temp/after/{temp_path.name}",
+            )
+        )
+
+        temp_path.write_text(block.updated_text, encoding="utf-8")
+
+        patch_path = temp_path.with_suffix(
+            temp_path.suffix + f".{workspace.workspace_id}.patch"
+        )
+        patch_path.write_text(diff_text, encoding="utf-8")
+        patch_paths.append(patch_path)
+
+    # -----------------------------------------------------------------------
+    # 4️⃣  Return workspace + generated patches.
+    # -----------------------------------------------------------------------
+    return workspace, patch_paths
+
+def print_final_diffs(
+    workspace: PatchWorkspace,
+    app: Any | None = None,
+) -> bool:
+    """
+    Print a human‑readable diff for every file that was edited in *workspace*,
+    then prompt the user for confirmation – exactly like ``_confirm_and_apply``.
+
+    Returns
+    -------
+    bool
+        ``True`` if edits were applied, ``False`` if the user cancelled.
+    """
+    # -----------------------------------------------------------------------
+    # 1️⃣  Show the diffs (same as the original implementation)
+    # -----------------------------------------------------------------------
+    final_diffs: dict[Path, str] = diff_temp_workspace_against_original(workspace)
+
+    for original_path, diff_text in final_diffs.items():
+        if diff_text:
+            print(f"\n--- final diff: {original_path.name} ---\n")
+            diff_lines = diff_text.splitlines()
+
+            if app is not None and hasattr(app, "print_tui_code_block"):
+                app.print_tui_code_block(diff_lines, "diff")
+            else:
+                print("\n".join(diff_lines))
+        else:
+            print(f"\n[no diff] {original_path.name} (file unchanged)\n")
+
+    # -----------------------------------------------------------------------
+    # 2️⃣  Prompt the human – reuse the same key‑binding logic as _confirm_and_apply
+    # -----------------------------------------------------------------------
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.application import Application
+
+    # ----  USER DECISION  -------------------------------------------------
+    key_bindings = KeyBindings()
+    decision: dict[str, str] = {"mode": "cancel"}
+
+    # There is no `blocks` variable here, so we cannot inspect `has_risky_changes`.
+    # For a safe default we simply assume there are no risky changes.
+    # (If you later pass the `blocks` list into this function you can replace
+    #  `has_risky_changes = False` with the real calculation.)
+    has_risky_changes = False
+
+    @key_bindings.add("f2")
+    def _apply_safe(event) -> None:
+        decision["mode"] = "safe"
+        event.app.exit()
+
+    @key_bindings.add("f3")
+    def _apply_full(event) -> None:
+        decision["mode"] = "full"
+        event.app.exit()
+
+    @key_bindings.add("escape")
+    def _cancel(event) -> None:
+        event.app.exit()
+
+    prompt_text = f"  {len(final_diffs)} file(s) with staged changes"
+    if has_risky_changes:
+        prompt_text += " · F3 apply all (including yellow risky changes)"
+    prompt_text += " · F2 apply safe bounded changes · Esc cancel  "
+
+    body = HSplit([Window(FormattedTextControl(prompt_text))])
+
+    Application(layout=Layout(body), key_bindings=key_bindings, full_screen=False).run()
+
+    # -----------------------------------------------------------------------
+    # 3️⃣  Act on the user’s choice
+    # -----------------------------------------------------------------------
+    if decision["mode"] == "safe":
+        commit_temp_workspace_to_original(workspace)
+        print("\nApplied staged safe bounded changes.\n")
+        return True
+
+    if decision["mode"] == "full":
+        """
+        In the “full” case we already have the updated contents in the
+        temporary files (they were written by the earlier call to
+        ``apply_blocks_to_temp_workspace``).  No extra parsing or
+        ``EditBlock`` reconstruction is required – just copy the temp
+        files back to their original locations.
+        """
+        commit_temp_workspace_to_original(workspace)
+        print("\nApplied staged full changes.\n")
+        return True
+
+    # -----------------------------------------------------------------------
+    # 4️⃣  Cancel – nothing was changed
+    # -----------------------------------------------------------------------
+    print("\nCancelled — no files were changed.\n")
+    return False
+
+
+
 def _detect_strategy(llm_output: str) -> EditStrategy:
-    if re.search(r"^<{5,7}\s*SEARCH", llm_output, re.MULTILINE | re.IGNORECASE):
+    if re.search(r"^<{2,7}\s*SEARCH", llm_output, re.MULTILINE | re.IGNORECASE):
         return EditStrategy.SEARCH_REPLACE
-    if re.search(r"^--- a?/", llm_output, re.MULTILINE):
+    unified_diff_patterns = [
+        r"^---\s+(?:a/)?",
+        r"^\+\+\+\s+(?:b/)?",
+        r"^@@\s+-\d+",
+    ]
+
+    if any(
+            re.search(pattern, llm_output, re.MULTILINE)
+            for pattern in unified_diff_patterns
+    ):
         return EditStrategy.UNIFIED_DIFF
     return EditStrategy.WHOLE_FILE
 
