@@ -1176,10 +1176,19 @@ class SimpleAgentTUI(TuiFormatter):
 
         memory_text = f"{role}: {content}"
 
-        try:
-            embedding = vectorise_text(self.client, memory_text, self.embedding_model)
-        except Exception:
-            embedding = []
+        # Check if this is a Pollinations embedding model
+        if self.embedding_model in self.pollinations_client.list_models_whitelisted():
+            # Use Pollinations client for embeddings
+            try:
+                embedding = self.pollinations_client.create_embeddings(memory_text)
+            except Exception:
+                embedding = []
+        else:
+            # Use Ollama client for embeddings
+            try:
+                embedding = vectorise_text(self.client, memory_text, self.embedding_model)
+            except Exception:
+                embedding = []
 
         if not utils.is_embedding_vector(embedding):
             embedding = []
@@ -2277,11 +2286,22 @@ class SimpleAgentTUI(TuiFormatter):
         thinking_started = False
         maybe_thinking_prefix = False
 
-        response_stream = self.client.chat(
-            chat_messages,
-            stream=True,
-            model=self.model,
-        )
+        # Check if this is a Pollinations model
+        if self.model in self.pollinations_client.list_models_whitelisted():
+            # Use Pollinations client for Pollinations models
+            response_stream = self.pollinations_client.chat_completions(
+                messages=chat_messages,
+                model=self.model,
+                stream=True
+            )
+        else:
+            # Use Ollama client for Ollama models
+            response_stream = self.client.chat(
+                chat_messages,
+                stream=True,
+                model=self.model,
+            )
+        
         self.is_streaming_response = True
 
         for chunk in response_stream:
@@ -2999,17 +3019,57 @@ class SimpleAgentTUI(TuiFormatter):
         print()
         self.print_dim(f"Reading attachment: {path.name}")
 
-        try:
-            embedded_context_items = utils.attachment_to_embedded_context_items(
-                client=self.client,
-                file_path=path,
-                model=self.embedding_model,
-                vision_model=self.vision_model if path.suffix.lower() in IMAGE_ATTACHMENT_EXTENSIONS else None,
-            )
-        except Exception as error:
-            self.print_error(f"Could not read/embed attachment {path.name}: {error}")
-            print()
-            return []
+        # Check if this is a Pollinations embedding model
+        if self.embedding_model in self.pollinations_client.list_models_whitelisted():
+            # For Pollinations models, we need to handle embedding differently
+            try:
+                # First get the text content
+                content = utils.read_attachment_to_string(path)
+                if not content:
+                    self.print_error(f"No readable content found in attachment: {path.name}")
+                    print()
+                    return []
+                
+                # Split content into chunks
+                chunks = utils.split_with_recursive_text_splitter(content)
+                
+                # Create embedded context items using Pollinations embeddings
+                embedded_context_items = []
+                for i, chunk in enumerate(chunks):
+                    try:
+                        embedding = self.pollinations_client.create_embeddings(chunk)
+                        if utils.is_embedding_vector(embedding):
+                            embedded_context_items.append({
+                                "source_type": "attachment_chunk",
+                                "source_path": str(path.resolve()),
+                                "title": path.name,
+                                "content": chunk,
+                                "chunk_index": i,
+                                "embedding": embedding,
+                                "extension": path.suffix.lower(),
+                                "mime_type": mimetypes.guess_type(str(path))[0] or "application/octet-stream",
+                            })
+                    except Exception:
+                        # Skip chunks that fail to embed
+                        continue
+                        
+            except Exception as error:
+                self.print_error(f"Could not read/embed attachment {path.name}: {error}")
+                print()
+                return []
+        else:
+            # Use Ollama client for embeddings
+            try:
+                embedded_context_items = utils.attachment_to_embedded_context_items(
+                    client=self.client,
+                    file_path=path,
+                    model=self.embedding_model,
+                    vision_model=self.vision_model if path.suffix.lower() in IMAGE_ATTACHMENT_EXTENSIONS else None,
+                )
+            except Exception as error:
+                self.print_error(f"Could not read/embed attachment {path.name}: {error}")
+                print()
+                return []
 
         if not embedded_context_items:
             self.print_error(f"No readable content found in attachment: {path.name}")
