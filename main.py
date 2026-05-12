@@ -3221,48 +3221,26 @@ class SimpleAgentTUI(TuiFormatter):
             )
 
     def show_models(self) -> None:
-        # Show Ollama models
-        try:
-            ollama_models = self.client.list_models()
-        except Exception as exc:
-            self.print_error(f"Could not list Ollama models: {exc}")
-            ollama_models = []
-
         # Show Pollinations models
         pollinations_models = self.pollinations_client.list_models_whitelisted()
         
-        if not ollama_models and not pollinations_models:
-            self.print_dim("No models found. Try: ollama pull nemotron-3-nano:4b")
+        if not pollinations_models:
+            self.print_dim("No Pollinations models found.")
             return
 
         print()
-        if ollama_models:
-            print(self.bold("Installed Ollama models:"))
-            for model in ollama_models:
-                markers = []
-                if model == self.model:
-                    markers.append("chat")
-                if model == self.embedding_model:
-                    markers.append("embed")
-                if model == self.vision_model:
-                    markers.append("vision")
-                marker_text = f" * [{' / '.join(markers)}]" if markers else ""
-                num_context = self.get_ollama_model_num_context(model)
-                print(f"  {model}{self.format_num_context(num_context)}{marker_text}")
-        
-        if pollinations_models:
-            print(self.bold("Pollinations models:"))
-            for model in pollinations_models:
-                markers = []
-                if model == self.model:
-                    markers.append("chat")
-                if model == self.embedding_model:
-                    markers.append("embed")
-                if model == self.vision_model:
-                    markers.append("vision")
-                marker_text = f" * [{' / '.join(markers)}]" if markers else ""
-                # Pollinations models don't have context length info
-                print(f"  {model}{marker_text}")
+        print(self.bold("Pollinations models:"))
+        for model in pollinations_models:
+            markers = []
+            if model == self.model:
+                markers.append("chat")
+            if model == self.embedding_model:
+                markers.append("embed")
+            if model == self.vision_model:
+                markers.append("vision")
+            marker_text = f" * [{' / '.join(markers)}]" if markers else ""
+            # Pollinations models don't have context length info
+            print(f"  {model}{marker_text}")
         print()
 
     def show_workflow_help(self) -> None:
