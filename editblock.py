@@ -1478,6 +1478,7 @@ class UnifiedDiffEditor:
             # Apply the changes at the specified position
             if removals or additions:
                 # Calculate the actual position in the file
+                # The old_start from the hunk header indicates where the first change occurs
                 pos = old_start
                 
                 # Ensure we don't go out of bounds
@@ -1485,20 +1486,29 @@ class UnifiedDiffEditor:
                     pos = 0
                 if pos > len(result):
                     pos = len(result)
-                    
-                # Instead of blindly removing old_count lines, we should remove only the lines that are actually marked for removal
-                # Count how many lines we actually have to remove
-                actual_removal_count = len(removals)
                 
-                # Remove the actual lines that were marked for removal
-                if actual_removal_count > 0:
-                    # Remove the actual removal lines from the result
-                    end_pos = min(pos + actual_removal_count, len(result))
-                    if end_pos > pos:
-                        del result[pos:end_pos]
-                    
-                # Insert new lines
-                result[pos:pos] = additions
+                # We need to:
+                # 1. Keep context lines before the changes (old_start lines from start)
+                # 2. Remove the old_count lines starting at old_start
+                # 3. Insert additions at that position
+                
+                # First, reconstruct the result up to the old_start position
+                before_changes = result[:old_start]
+                
+                # Calculate how many lines to remove (take the minimum of actual removals and old_count)
+                lines_to_remove = min(len(removals), old_count) if removals else old_count
+                
+                # Get the part after the lines to remove
+                remaining_start = old_start + lines_to_remove
+                
+                # Ensure we don't go out of bounds
+                if remaining_start > len(result):
+                    remaining_start = len(result)
+                
+                after_changes = result[remaining_start:]
+                
+                # Combine: before + additions + after
+                result = before_changes + additions + after_changes
                 
         return "".join(result)
 
@@ -1565,16 +1575,19 @@ class UnifiedDiffEditor:
                     pos = 0
                 if pos > len(result):
                     pos = len(result)
-                    
-                # Replace the specified number of lines
-                if old_count > 0:
-                    # Remove old lines
-                    end_pos = min(pos + old_count, len(result))
-                    if end_pos > pos:
-                        del result[pos:end_pos]
-                    
-                # Insert new lines
-                result[pos:pos] = additions
+                
+                # Same logic as hunk numbering - reconstruct the result
+                before_changes = result[:pos]
+                lines_to_remove = min(len(removals), old_count) if removals else old_count
+                remaining_start = pos + lines_to_remove
+                
+                if remaining_start > len(result):
+                    remaining_start = len(result)
+                
+                after_changes = result[remaining_start:]
+                
+                # Combine: before + additions + after
+                result = before_changes + additions + after_changes
                 
         return "".join(result)
 
