@@ -1316,45 +1316,57 @@ class UnifiedDiffEditor:
         text = re.sub(r"^```[a-z]*\n?", "", text, flags=re.MULTILINE)
         text = re.sub(r"^\s*```\s*$", "", text, flags=re.MULTILINE)
 
-        # Try to detect if this is a unified diff without proper headers
-        # by looking for the @@ pattern at the start
+        # Handle case where we have multiple diff blocks in one output
+        # Split by potential diff headers or @@ markers
         lines = text.splitlines()
-        if lines and lines[0].strip().startswith("@@"):
-            # This looks like a unified diff without headers, try to extract path from context
-            # Look for a path hint in the surrounding lines
-            path_hint = ""
-            # Check if there's a path hint in the first few lines before the diff
-            for i in range(min(5, len(lines))):
-                line = lines[i]
-                if line.strip() and not line.strip().startswith("@@") and not line.strip().startswith("+++") and not line.strip().startswith("---"):
-                    # Try to extract path from context
-                    path_candidate = _normalise_llm_path_hint(line.strip())
-                    if path_candidate and _is_probable_path(path_candidate):
-                        path_hint = path_candidate
-                        break
-            
-            # If we found a path hint, create a fake header
-            if path_hint:
-                fake_header = f"--- a/{path_hint}\n+++ b/{path_hint}\n"
-                text = fake_header + text
-        
         chunks: list[tuple[str, str]] = []
         current_hint = ""
         current_lines: list[str] = []
+        i = 0
 
-        for line in text.splitlines():
-            if line.startswith("---"):
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            
+            # Check if this line starts a new diff block
+            if stripped.startswith("---"):
                 header_match = self._DIFF_HEADER_RE.match(line)
                 if header_match:
+                    # Save previous diff block if exists
                     if current_hint and current_lines:
                         chunks.append((current_hint, "\n".join(current_lines)))
+                    
+                    # Start new diff block
                     raw_path = header_match.group(1).strip()
                     current_hint = raw_path.removeprefix("a/").removeprefix("b/").strip()
                     current_lines = [line]
+                    i += 1
                     continue
-            if current_hint:
+            elif stripped.startswith("@@") and not current_hint:
+                # This is a unified diff without proper headers, try to find path hint
+                # Look backwards for a path hint
+                path_hint = ""
+                for j in range(max(0, i-10), i):
+                    if lines[j].strip() and not lines[j].strip().startswith("@@") and not lines[j].strip().startswith("+++") and not lines[j].strip().startswith("---"):
+                        path_candidate = _normalise_llm_path_hint(lines[j].strip())
+                        if path_candidate and _is_probable_path(path_candidate):
+                            path_hint = path_candidate
+                            break
+                
+                # If we found a path hint, create a fake header
+                if path_hint:
+                    fake_header = f"--- a/{path_hint}\n+++ b/{path_hint}\n"
+                    current_lines = [fake_header, line]
+                    current_hint = path_hint
+                else:
+                    # If no path hint, treat as continuation of current diff or start new one
+                    current_lines.append(line)
+            elif current_hint:
                 current_lines.append(line)
+            
+            i += 1
 
+        # Don't forget the last diff block
         if current_hint and current_lines:
             chunks.append((current_hint, "\n".join(current_lines)))
 
