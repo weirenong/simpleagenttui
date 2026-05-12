@@ -1363,6 +1363,7 @@ class UnifiedDiffEditor:
         """
         orig_lines = original.splitlines(keepends=True)
         result: list[str] = list(orig_lines)
+        offset = 0
         
         # Process hunks in order to maintain correct positioning
         for hunk in self._split_hunks(diff_text):
@@ -1392,7 +1393,7 @@ class UnifiedDiffEditor:
 
             # Find the actual position in the current result file by searching for the context
             # This ensures we match the correct location even if the diff doesn't start at exact line
-            pos = orig_start
+            pos = orig_start + offset
             
             # Verify that the context lines match what we expect in the current result
             if context_lines and pos < len(result):
@@ -1422,8 +1423,9 @@ class UnifiedDiffEditor:
             actual_removal_count = len(removals) if removals else orig_count
             
             # Replace the removal span with the additions.
-            # We need to be careful about positioning since we're modifying the result in-place
+            # Track offset changes for subsequent hunks
             result[pos: pos + actual_removal_count] = additions
+            offset += len(additions) - actual_removal_count
 
         return "".join(result)
 
