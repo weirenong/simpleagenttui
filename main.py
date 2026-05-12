@@ -2787,15 +2787,6 @@ class SimpleAgentTUI(TuiFormatter):
         self.delete_temp_files()
         self.attachments.clear()
         self.next_input_prefill = ""
-        
-        # Check connectivity
-        pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
-        ollama_available = self.client.is_available()
-        
-        if not pollinations_configured:
-            self.print_dim("Pollinations API authentication required for full functionality.")
-        if not ollama_available:
-            self.print_dim("Ollama is not available. Install and start Ollama to use local models.")
 
     # -----------------------------
     # Attachments
