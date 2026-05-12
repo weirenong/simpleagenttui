@@ -608,8 +608,20 @@ class SimpleAgentTUI(TuiFormatter):
         print()
         self.clear_screen()
         self.show_landing_page()
+        
+        # Check connectivity
+        pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+        ollama_available = self.client.is_available()
+        
         self.print_info(f"Workspace: {self.workspace_dir}")
-        self.print_info("Connected to Ollama.")
+        if pollinations_configured:
+            self.print_info("Pollinations: Ready")
+        else:
+            self.print_info("Pollinations: Not Configured")
+        if ollama_available:
+            self.print_info("Ollama: Ready")
+        else:
+            self.print_info("Ollama: Unavailable")
         self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
         self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
         self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
@@ -906,15 +918,20 @@ class SimpleAgentTUI(TuiFormatter):
         self.clear_screen()
         self.show_landing_page()
 
-        # Check if Pollinations API is configured
+        # Check connectivity
         pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+        ollama_available = self.client.is_available()
         
         self.refresh_model_context_lengths()
         self.print_info(f"Workspace: {self.workspace_dir}")
         if pollinations_configured:
-            self.print_info("Pollinations API: Ready")
+            self.print_info("Pollinations: Ready")
         else:
-            self.print_info("Pollinations API: Not Configured")
+            self.print_info("Pollinations: Not Configured")
+        if ollama_available:
+            self.print_info("Ollama: Ready")
+        else:
+            self.print_info("Ollama: Unavailable")
         self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
         self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
         self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
@@ -2519,16 +2536,21 @@ class SimpleAgentTUI(TuiFormatter):
 
         self.show_thinking = not self.show_thinking
 
-        # Check if Pollinations API is configured
+        # Check connectivity
         pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+        ollama_available = self.client.is_available()
         
         self.clear_screen()
         self.show_landing_page()
         self.print_info(f"Workspace: {self.workspace_dir}")
         if pollinations_configured:
-            self.print_info("Pollinations API: Ready")
+            self.print_info("Pollinations: Ready")
         else:
-            self.print_info("Pollinations API: Not Configured")
+            self.print_info("Pollinations: Not Configured")
+        if ollama_available:
+            self.print_info("Ollama: Ready")
+        else:
+            self.print_info("Ollama: Unavailable")
         self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
         self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
         self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
@@ -2734,6 +2756,15 @@ class SimpleAgentTUI(TuiFormatter):
         self.delete_temp_files()
         self.attachments.clear()
         self.next_input_prefill = ""
+        
+        # Check connectivity
+        pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+        ollama_available = self.client.is_available()
+        
+        if not pollinations_configured:
+            self.print_dim("Pollinations API authentication required for full functionality.")
+        if not ollama_available:
+            self.print_dim("Ollama is not available. Install and start Ollama to use local models.")
 
     # -----------------------------
     # Attachments
@@ -3156,12 +3187,17 @@ class SimpleAgentTUI(TuiFormatter):
         print("A Claude Code-style terminal interface for your SimpleAgent variant.")
         print()
         print("Backend:")
-        # Check if Pollinations API is configured
+        # Check connectivity
         pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+        ollama_available = self.client.is_available()
         if pollinations_configured:
-            print("  Pollinations API: Ready")
+            print("  Pollinations: Ready")
         else:
-            print("  Pollinations API: Not Configured")
+            print("  Pollinations: Not Configured")
+        if ollama_available:
+            print("  Ollama: Ready")
+        else:
+            print("  Ollama: Unavailable")
         print(f"  Model:       {self.model}{self.format_num_context(self.model_num_context)}")
         print(f"  Embeddings:  {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
         print(f"  Vision:      {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
