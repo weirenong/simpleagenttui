@@ -1356,21 +1356,18 @@ class UnifiedDiffEditor:
 
         for line in diff_text.splitlines(keepends=True):
             stripped = line.strip()
-            # Handle malformed hunk headers that might be missing numbers
-            if stripped.startswith("@@") or (stripped.startswith("---") and not current):
+            # Handle hunk headers properly
+            if stripped.startswith("@@") and re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', stripped):
+                if current:
+                    hunks.append("".join(current))
+                current = [line]
+            elif stripped.startswith("@@") and not re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', stripped):
+                # Malformed hunk header - treat as start of new hunk
                 if current:
                     hunks.append("".join(current))
                 current = [line]
             elif current:
-                # If we encounter a line that looks like a hunk header but with different format
-                # or if we're in a hunk and encounter a line that looks like a new diff section
-                if stripped.startswith("@@") and not stripped.startswith("@@ -"):
-                    # This might be a malformed hunk header, treat as start of new hunk
-                    if current:
-                        hunks.append("".join(current))
-                    current = [line]
-                else:
-                    current.append(line)
+                current.append(line)
 
         if current:
             hunks.append("".join(current))
@@ -1408,7 +1405,7 @@ class UnifiedDiffEditor:
             # Parse hunk header to get line numbers
             hunk_header = None
             for line in hunk_lines:
-                if line.startswith('@@'):
+                if line.startswith('@@') and re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', line):
                     hunk_header = line
                     break
                     
@@ -1417,39 +1414,14 @@ class UnifiedDiffEditor:
                 
             # Extract line numbers from hunk header
             # Format: @@ -start,count +start,count @@
-            # Handle malformed headers gracefully
             match = re.search(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', hunk_header)
             if not match:
-                # Try to extract line numbers even if format is slightly off
-                # Look for patterns like @@ -10 +10 @@
-                simple_match = re.search(r'@@ -(\d+) \+(\d+) @@', hunk_header)
-                if not simple_match:
-                    # If we can't parse the hunk header, try to parse the diff manually
-                    # by looking for the first line that starts with - or +
-                    pos = 0
-                    for i, line in enumerate(hunk_lines):
-                        if line.startswith('-') or line.startswith('+'):
-                            pos = i
-                            break
-                    # If we found a position, try to parse the hunk differently
-                    if pos > 0:
-                        # Try to find the position by looking for context lines
-                        # For now, just apply to the end of the file as a fallback
-                        # This is a very basic fallback - in practice, we'd want better logic
-                        pass
-                    else:
-                        continue
-                        
-                else:
-                    old_start = int(simple_match.group(1)) - 1  # Convert to 0-based indexing
-                    old_count = 1  # Default count
-                    new_start = int(simple_match.group(2)) - 1  # Convert to 0-based indexing
-                    new_count = 1  # Default count
-            else:
-                old_start = int(match.group(1)) - 1  # Convert to 0-based indexing
-                old_count = int(match.group(2)) if match.group(2) else 1
-                new_start = int(match.group(3)) - 1  # Convert to 0-based indexing
-                new_count = int(match.group(4)) if match.group(4) else 1
+                continue
+                
+            old_start = int(match.group(1)) - 1  # Convert to 0-based indexing
+            old_count = int(match.group(2)) if match.group(2) else 1
+            new_start = int(match.group(3)) - 1  # Convert to 0-based indexing
+            new_count = int(match.group(4)) if match.group(4) else 1
 
             # Parse additions and removals
             removals = []
@@ -1472,7 +1444,7 @@ class UnifiedDiffEditor:
             # Apply the changes at the specified position
             if removals or additions:
                 # Calculate the actual position in the file
-                pos = old_start if 'old_start' in locals() else 0
+                pos = old_start
                 
                 # Ensure we don't go out of bounds
                 if pos < 0:
@@ -1510,7 +1482,7 @@ class UnifiedDiffEditor:
             # Parse hunk header to get line numbers
             hunk_header = None
             for line in hunk_lines:
-                if line.startswith('@@'):
+                if line.startswith('@@') and re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', line):
                     hunk_header = line
                     break
                     
