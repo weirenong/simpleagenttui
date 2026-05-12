@@ -597,7 +597,7 @@ class SimpleAgentTUI(TuiFormatter):
         )
         
         # Initialize Pollinations client
-        pollinations_api_key = os.getenv("POLLINATIONS_API_KEY")
+        pollinations_api_key = os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key")
         self.pollinations_client = PollinationsClient(
             PollinationsConfig(api_key=pollinations_api_key)
         )
@@ -2289,11 +2289,15 @@ class SimpleAgentTUI(TuiFormatter):
         # Check if this is a Pollinations model
         if self.model in self.pollinations_client.list_models_whitelisted():
             # Use Pollinations client for Pollinations models
-            response_stream = self.pollinations_client.chat_completions(
-                messages=chat_messages,
-                model=self.model,
-                stream=True
-            )
+            try:
+                response_stream = self.pollinations_client.chat_completions(
+                    messages=chat_messages,
+                    model=self.model,
+                    stream=True
+                )
+            except Exception as e:
+                self.print_error(f"Pollinations API error: {e}")
+                raise
         else:
             # Use Ollama client for Ollama models
             response_stream = self.client.chat(
