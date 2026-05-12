@@ -10,7 +10,7 @@ class PollinationsConfig:
     base_url: str = "https://gen.pollinations.ai"
     api_key: Optional[str] = None
     safe: Optional[str] = None
-    client_id: Optional[str] = None  # For Bring Your Own Pollen
+    client_id: Optional[str] = "pk_oCsTjaPx4Kj8WEaY"  # For Bring Your Own Pollen
 
 
 class PollinationsClient:
