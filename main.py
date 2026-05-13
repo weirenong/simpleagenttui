@@ -2289,11 +2289,25 @@ class SimpleAgentTUI(TuiFormatter):
         # Check if this is a Pollinations model
         if self.model in self.pollinations_client.list_models_whitelisted():
             # Use Pollinations client for Pollinations models
-            response_stream = self.pollinations_client.chat_completions(
+            # For Pollinations, we need to handle the streaming response differently
+            # The chat_completions method already handles streaming internally
+            response_data = self.pollinations_client.chat_completions(
                 messages=chat_messages,
                 model=self.model,
                 stream=True
             )
+            
+            # For Pollinations, we'll return the complete response directly
+            # since the streaming is already handled in the client
+            self.stop_loading_toolbar()
+            self.flush_streaming_reply_buffer()
+            self.is_streaming_response = False
+            print()
+            print()
+            
+            # Extract the content from the response
+            content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content
         else:
             # Use Ollama client for Ollama models
             response_stream = self.client.chat(
