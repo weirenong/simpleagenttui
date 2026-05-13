@@ -2369,7 +2369,24 @@ class SimpleAgentTUI(TuiFormatter):
 
         # Determine which client to use based on model type
         if self.model in self.pollinations_client.list_models_whitelisted():
-            normalized_response_stream = response_stream
+            # For Pollinations models, we need to handle the JSON response format properly
+            def normalize_pollinations_stream(stream):
+                for chunk in stream:
+                    # Pollinations returns JSON chunks
+                    if isinstance(chunk, dict):
+                        # Handle the Pollinations response format
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            choice = choices[0]
+                            message = choice.get("message", {})
+                            content = message.get("content", "")
+                            if content:
+                                yield content
+                    elif isinstance(chunk, str):
+                        # Handle string chunks that might be content
+                        yield chunk
+            
+            normalized_response_stream = normalize_pollinations_stream(response_stream)
         else:
             # For Ollama, the response stream yields dictionaries with message content
             # But sometimes it can yield raw strings, so we need to handle both cases
