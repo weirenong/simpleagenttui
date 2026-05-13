@@ -540,6 +540,7 @@ class SimpleAgentTUI(TuiFormatter):
         self.loading_active: bool = False
         self.loading_thread: threading.Thread | None = None
         self.loading_lock = threading.Lock()
+        self.raw_model_responses: list[dict] = []  # Track raw responses for debugging
 
         self.model_num_context: int | None = None
         self.embedding_model_num_context: int | None = None
@@ -2369,11 +2370,17 @@ class SimpleAgentTUI(TuiFormatter):
                 model=self.model,
             )
 
+        # Track raw responses for debugging
+        raw_responses = []
+        
         # Determine which client to use based on model type
         if self.model in self.pollinations_client.list_models_whitelisted():
             # For Pollinations models, we need to handle the JSON response format properly
             def normalize_pollinations_stream(stream):
                 for chunk in stream:
+                    # Store raw chunk for debugging
+                    raw_responses.append(chunk)
+                    
                     # Pollinations returns JSON chunks
                     if isinstance(chunk, dict):
                         # Handle the Pollinations response format
@@ -2394,6 +2401,9 @@ class SimpleAgentTUI(TuiFormatter):
             # But sometimes it can yield raw strings, so we need to handle both cases
             def normalize_ollama_stream(stream):
                 for chunk in stream:
+                    # Store raw chunk for debugging
+                    raw_responses.append(chunk)
+                    
                     if isinstance(chunk, dict):
                         yield chunk.get("message", {}).get("content", "")
                     else:
@@ -2514,6 +2524,9 @@ class SimpleAgentTUI(TuiFormatter):
         print()
         print()
 
+        # Store raw responses for debugging
+        self.raw_model_responses = raw_responses
+        
         return f"{STREAM_THINK_START}{thinking_text}{STREAM_THINK_END}{reply_text}".strip()
 
 
@@ -3522,6 +3535,11 @@ class SimpleAgentTUI(TuiFormatter):
         print()
 
     def show_response_debug(self) -> None:
+        # Store raw responses from model calls for debugging purposes
+        # This would require tracking raw responses in a separate variable
+        # For now, let's show the workflow debug as a placeholder
+        # In a real implementation, we'd need to track raw responses from model calls
+        
         if not self.last_workflow_messages:
             print()
             self.print_dim("No workflow prompt has been built yet.")
