@@ -1020,6 +1020,14 @@ class SimpleAgentTUI(TuiFormatter):
             # Check if this is a specific Pollinations API key error
             if "Pollinations API key not configured" in str(exc):
                 self.print_error(f"Pollinations API key not configured. Please run /api-pollinations to authenticate.")
+            # Check if we're using a Pollinations model and the error suggests API key issue
+            elif self.model in self.pollinations_client.list_models_whitelisted():
+                # Check if the error indicates API key or connectivity issues
+                error_str = str(exc).lower()
+                if "api key" in error_str or "authentication" in error_str or "unauthorized" in error_str:
+                    self.print_error(f"Pollinations API key not configured. Please run /api-pollinations to authenticate.")
+                else:
+                    self.print_error(f"Model call failed: {exc}")
             else:
                 self.print_error(f"Model call failed: {exc}")
 
