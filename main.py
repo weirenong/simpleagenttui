@@ -597,7 +597,7 @@ class SimpleAgentTUI(TuiFormatter):
         )
         
         # Initialize Pollinations client
-        pollinations_api_key = os.getenv("POLLINATIONS_API_KEY")
+        pollinations_api_key = os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key")
         self.pollinations_client = PollinationsClient(
             PollinationsConfig(api_key=pollinations_api_key)
         )
@@ -3603,6 +3603,9 @@ class SimpleAgentTUI(TuiFormatter):
                 # Update config with the API key
                 self.config["pollinations_api_key"] = access_token
                 save_config(self.config)
+                
+                # Set the API key on the pollinations client
+                self.pollinations_client.set_api_key(access_token)
                 
                 self.print_info("Successfully authenticated with Pollinations API!")
                 self.print_info(f"User: {user_info.get('name', 'Anonymous')}")
