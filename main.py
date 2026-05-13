@@ -3306,9 +3306,9 @@ class SimpleAgentTUI(TuiFormatter):
             self.config["model"] = model
             save_config(self.config)
 
-            self.pollinations_client = PollinationsClient(
-                PollinationsConfig(api_key=access_token)
-            )
+            # Update the existing client with the new API key
+            if hasattr(self, 'pollinations_client'):
+                self.pollinations_client.set_api_key(access_token)
             
             self.print_info(
                 f"Model changed to: {self.model}{self.format_num_context(self.model_num_context)} and saved to {CONFIG_FILE}"
@@ -3591,7 +3591,7 @@ class SimpleAgentTUI(TuiFormatter):
                 return
             
             # Display instructions
-            self.print_info(f"Please visit: {verification_uri}")
+            self.print_info(f"Please visit: https://enter.pollinations.ai{verification_uri}")
             self.print_info(f"Enter this code: {user_code}")
             self.print_dim("Then click 'Allow' to authorize this app.")
             print()
@@ -3612,6 +3612,9 @@ class SimpleAgentTUI(TuiFormatter):
                 # Update config with the API key
                 self.config["pollinations_api_key"] = access_token
                 save_config(self.config)
+                
+                # Update the existing client with the new API key
+                self.pollinations_client.set_api_key(access_token)
                 
                 self.print_info("Successfully authenticated with Pollinations API!")
                 self.print_info(f"User: {user_info.get('name', 'Anonymous')}")
