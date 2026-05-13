@@ -44,7 +44,7 @@ class PollinationsClient:
                         model: str = "openai",
                         temperature: float = 0.7,
                         max_tokens: int = 1000,
-                        stream: bool = False) -> Dict[str, Any]:
+                        stream: bool = True) -> Dict[str, Any]:
         """Generate text using chat completions"""
         url = f"{self.config.base_url}/v1/chat/completions"
         
