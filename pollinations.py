@@ -204,7 +204,8 @@ class PollinationsClient:
         url = f"{self.config.device_auth_base_url}/api/device/code"
 
         payload = {
-            "client_id": self.config.client_id
+            "client_id": self.config.client_id,
+            "scope": "generate"
         }
         
         response = self.session.post(url, json=payload)
