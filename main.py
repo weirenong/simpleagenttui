@@ -1016,18 +1016,36 @@ class SimpleAgentTUI(TuiFormatter):
         except Exception as exc:
             self.is_streaming_response = False
             self.stop_loading_toolbar()
-            
-            # Check if we're using a Pollinations model and API key is not configured
-            if self.model in self.pollinations_client.list_models_whitelisted():
-                pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+            error_message = str(exc).strip()
+            active_model = str(self.model or "")
+            pollinations_model_name = active_model.removeprefix("pollinations/")
+            is_pollinations_model = (
+                    active_model.startswith("pollinations/")
+                    or pollinations_model_name in self.pollinations_client.list_models_whitelisted()
+            )
+
+            if is_pollinations_model:
+                pollinations_configured = bool(
+                    os.getenv("POLLINATIONS_API_KEY")
+                    or self.config.get("pollinations_api_key")
+                )
                 if not pollinations_configured:
-                    self.print_error(f"Pollinations API key not configured. Please run /api-pollinations to authenticate.")
-                else:
-                    # If API key is configured but there's still an error, show the actual error
-                    self.print_error(f"Model call failed: {exc}")
-            else:
-                # For Ollama models, show the standard error
-                self.print_error(f"Model call failed: {exc}")
+                    self.print_error(
+                        "Pollinations API key not configured. Please run /api-pollinations to authenticate."
+                    )
+                    return
+                self.print_error(f"Pollinations model call failed: {error_message}")
+                return
+            if (
+                    "Could not connect to Ollama" in error_message
+                    or "ollama serve" in error_message
+                    or "Connection refused" in error_message
+            ):
+                self.print_error(
+                    "Could not connect to Ollama. Make sure Ollama is running with: ollama serve"
+                )
+                return
+            self.print_error(f"Model call failed: {error_message}")
 
 
     def get_final_workflow_reply(self, workflow_result) -> str:
