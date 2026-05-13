@@ -1016,7 +1016,12 @@ class SimpleAgentTUI(TuiFormatter):
         except Exception as exc:
             self.is_streaming_response = False
             self.stop_loading_toolbar()
-            self.print_error(f"Model call failed: {exc}")
+            
+            # Check if this is a specific Pollinations API key error
+            if "Pollinations API key not configured" in str(exc):
+                self.print_error(f"Pollinations API key not configured. Please run /api-pollinations to authenticate.")
+            else:
+                self.print_error(f"Model call failed: {exc}")
 
 
     def get_final_workflow_reply(self, workflow_result) -> str:
