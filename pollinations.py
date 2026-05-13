@@ -46,6 +46,7 @@ class PollinationsClient:
             temperature: float = 0.7,
             max_tokens: int = 1000,
             stream: bool = True,
+            thinking: bool = True,
     ):
         """Generate text using chat completions"""
         url = f"{self.config.base_url}/v1/chat/completions"
@@ -56,7 +57,14 @@ class PollinationsClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": stream,
+            "thinking": {
+                "type": "enabled" if thinking else "disabled",
+                "budget_tokens": 1000  # Reasonable budget for thinking
+            } if thinking else None,
         }
+
+        # Remove None values from payload
+        payload = {k: v for k, v in payload.items() if v is not None}
 
         response = self.session.post(url, json=payload, stream=stream)
 

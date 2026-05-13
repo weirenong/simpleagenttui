@@ -2292,6 +2292,7 @@ class SimpleAgentTUI(TuiFormatter):
                 messages=chat_messages,
                 model=self.model,
                 stream=True,
+                thinking=True,  # Enable thinking for Pollinations models
             )
         else:
             response_stream = self.client.chat(
