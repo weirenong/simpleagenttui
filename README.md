@@ -2,7 +2,7 @@
 
 ![SimpleAgent mascot logo](screenshots/mascot_logo.png)
 
-**SimpleAgent** is a lightweight local AI coding agent built around a simple idea: small models can become useful when the surrounding system gives them strong structure, good context, safe patching, and human-in-the-loop review.
+**SimpleAgent** is a local AI coding agent built around a simple idea: small models can become useful when the surrounding system gives them strong structure, good context, safe patching, and human-in-the-loop review.
 
 Tested on Macbook Pro M2, 16GB RAM. This is made for users who wants to experience a local model with tool-like capabilities with their edge devices.
 
@@ -12,9 +12,29 @@ Tested on Macbook Pro M2, 16GB RAM. This is made for users who wants to experien
 
 SimpleAgent is designed for local Ollama models such as `nemotron-3-nano:4b`, with a focus on practical code editing, workflow orchestration, file attachments, and safe patch application inside a terminal UI.
 
+It also supports heavier workflows through Pollinations.ai models and Ollama cloud models.
+
 ![funny](screenshots/humour.png)
 
 Served in a fun flavour!
+
+---
+## Quickstart
+
+To install:
+```bash
+pipx install weirenong-simpleagent
+```
+
+Run SimpleAgent:
+```bash
+simpleagent
+```
+
+Set up pollinations api for quick usage:
+```bash
+/api-pollinations
+```
 
 ---
 
@@ -189,7 +209,7 @@ This keeps the agent behaviour transparent. The model is not hidden behind a bla
 
 SimpleAgent TUI is a terminal-based local AI assistant for:
 
-- chatting with Ollama models,
+- chatting with models,
 - attaching project files as context,
 - running multi-step prompt workflows,
 - generating code edits,
@@ -292,14 +312,14 @@ This design keeps the user experience simple:
 
 ```text
 Switch persona → get different system context + different workflow behaviour.
-
+```
 ---
 
 ## Workflow System
 
 Workflows are markdown files stored in either the project workflows directory or the user workflows directory.
-
-They are intentionally simple and readable.
+This is SimpleAgent's solution to automation and agentic tool usage.
+They are intentionally simple, readable and easy to edit.
 
 ### Workflow Commands
 
@@ -319,6 +339,8 @@ They are intentionally simple and readable.
 | `add_prompt_output: "name"` | Add output from a previous prompt block |
 | `print: "..."` | Print workflow status text to the interface |
 | `prompt: "output_name"` | Run the model and store output under a name |
+| `stage_code_changes"` | Applies the model suggested changes to a temp working copy |
+| `stage_diffs"` | Shows the diff between original and staged temp copy |
 
 ### Multiline Workflow Strings
 
@@ -332,7 +354,92 @@ Preserve whitespace.
 "
 ```
 
-This is useful for detailed procedural instructions.
+Example of a multi prompt workflow with code staging and diff applying:
+
+```
+Coding SimpleAgent workflow
+
+prompt_start: "plan"
+print: "Summoning the intern to draft plans..."
+add_persona_context
+add_recent_messages
+add_attachment_context
+add_original_user_prompt
+add_user_prompt: "
+You are a senior engineer. Create a short coding plan.
+
+Use EXACTLY these three headers. Nothing else.
+
+CHANGE
+One short sentence only.
+
+FILES
+One filename per line. Only files that need editing.
+
+STEPS
+Numbered list. Max 6 steps.
+Start each step with a verb: Add, Remove, Replace, Update, Fix, Delete.
+
+Do not add explanations, greetings, or extra text.
+"
+prompt: "plan"
+prompt_end
+
+
+prompt_start: "code"
+print: "Tiny goblin engineer deployed. Work work. Generating first version..."
+add_persona_context
+add_attachment_context
+add_original_user_prompt
+add_prompt_output: "plan"
+add_user_prompt: "
+Implement the plan. Output ONLY file paths and unified diffs. No explanations. Give fast responses.
+
+Rules (follow exactly):
+1. File path on its own line.
+2. Then a unified diff block.
+3. Always show 1-2 lines of unchanged content
+
+Do not write any text outside the file path + diff blocks.
+Do not use python. Always use diff.
+Keep changes small and precise.
+"
+prompt: "code"
+prompt_end
+
+
+prompt_start: "review"
+print: "Doing some self checks. Generating the second version..."
+add_persona_context
+add_attachment_context
+add_original_user_prompt
+add_prompt_output: "plan"
+add_prompt_output: "code"
+add_user_prompt: "
+You are a strict code reviewer.
+
+Check the previous code output. Give fast responses.
+
+Tasks:
+- Fix any broken unified diff format
+- Make sure it actually follows the goal of the original user prompt
+- Fix wrong line numbers or bad context if needed
+
+Output ONLY corrected unified diff blocks in the exact same format as the code stage (file path + ```diff block).
+
+If no fixes needed, output the original blocks unchanged.
+Do not add any explanations.
+"
+prompt: "output"
+prompt_end
+
+
+prompt_start: "apply"
+print: "Review staged diffs carefully before accepting changes."
+stage_code_changes: "review"
+stage_diffs
+prompt_end
+```
 
 ### Workflow Debugging
 
@@ -344,7 +451,7 @@ Use:
 
 to inspect the exact prompt messages sent during the last workflow run.
 
-This is important when tuning prompts for small models because you need to see what the model actually received.
+This gives full transparency on token usage and also all the context + system + workflow prompts that goes in.
 
 ---
 
@@ -531,12 +638,11 @@ The TUI aims to make local model experimentation fast and inspectable.
 | `/paste` | Paste text or image from clipboard |
 | `/clear` | Clear session history, memory, attachments, web context, and workflow debug |
 | `/code` | Review/apply edits from the last assistant reply |
-| `/model <name>` | Show or change the Ollama chat model |
-| `/embedding <name>` | Show or change the embedding model |
-| `/vision <name>` | Show or change the vision model |
-| `/models` | List installed Ollama models |
-| `/select-model` | Select and persist an installed chat model |
-| `/select-embedding` | Select and persist an installed embedding model |
+| `/model <name>` | Show or change the chat model, use prefix pollinations/qwen-coder |
+| `/embedding <name>` | Show or change the embedding model, use prefix pollinations/openai-3-small |
+| `/vision <name>` | Show or change the vision model, use prefix pollinations/mistral |
+| `/models` | List installed Ollama models and whitelisted Pollinations.ai models |
+| `/api-pollinations` | Set up pollinations.ai api usage |
 | `/persona` | Open persona manager |
 | `/workflow` | Show workflow help |
 | `/workflow-install <path>` | Install a workflow markdown file |
@@ -607,15 +713,18 @@ ollama pull granite3.2-vision:2b
 simpleagent
 ```
 
+Alternatively, you may use pollinations.ai models instead of ollama too:
+
+```bash
+/api-pollinations
+```
+
 ---
 
 ## Requirements
 
 - Python 3.10+
-- Ollama running locally
-- A local chat model, such as `nemotron-3-nano:4b`
-- An embedding model, such as `ordis/jina-embeddings-v2-base-code:latest`
-- Optional vision model for image attachments
+- Ollama or Pollinations.ai api
 
 ---
 
@@ -623,6 +732,14 @@ simpleagent
 
 SimpleAgent was built and tested around small local models.
 
+Using Pollinations.ai:
+| Role | Suggested Model |
+|---|---|
+| General chat and coding workflows | `qwen-safety` or `qwen-coder` |
+| Embeddings | `openai-3-small` |
+| Vision | `mistral` |
+
+Using Ollama:
 | Role | Suggested Model |
 |---|---|
 | General chat and coding workflows | `nemotron-3-nano:4b` |
