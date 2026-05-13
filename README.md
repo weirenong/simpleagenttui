@@ -719,6 +719,9 @@ Alternatively, you may use pollinations.ai models instead of ollama too:
 /api-pollinations
 ```
 
+Follow the instructions as shown in the screenshot to set up the pollinations.ai api:
+![pollinations](screenshots/pollinations_api.png)
+
 ---
 
 ## Requirements
