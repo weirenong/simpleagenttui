@@ -2351,7 +2351,8 @@ class SimpleAgentTUI(TuiFormatter):
                 raise Exception("Pollinations API key not configured")
             
             try:
-                response_stream = self.pollinations_client.chat_completions(
+                # Capture the raw stream from Pollinations
+                raw_response_stream = self.pollinations_client.chat_completions(
                     messages=chat_messages,
                     model=self.model,
                     stream=True,
@@ -2378,7 +2379,7 @@ class SimpleAgentTUI(TuiFormatter):
             # For Pollinations models, we need to handle the JSON response format properly
             def normalize_pollinations_stream(stream):
                 for chunk in stream:
-                    # Store raw chunk for debugging
+                    # Store raw chunk for debugging BEFORE any processing
                     raw_responses.append(chunk)
                     
                     # Pollinations returns JSON chunks
@@ -2395,13 +2396,13 @@ class SimpleAgentTUI(TuiFormatter):
                         # Handle string chunks that might be content
                         yield chunk
             
-            normalized_response_stream = normalize_pollinations_stream(response_stream)
+            normalized_response_stream = normalize_pollinations_stream(raw_response_stream)
         else:
             # For Ollama, the response stream yields dictionaries with message content
             # But sometimes it can yield raw strings, so we need to handle both cases
             def normalize_ollama_stream(stream):
                 for chunk in stream:
-                    # Store raw chunk for debugging
+                    # Store raw chunk for debugging BEFORE any processing
                     raw_responses.append(chunk)
                     
                     if isinstance(chunk, dict):
