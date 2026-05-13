@@ -1017,18 +1017,16 @@ class SimpleAgentTUI(TuiFormatter):
             self.is_streaming_response = False
             self.stop_loading_toolbar()
             
-            # Check if this is a specific Pollinations API key error
-            if "Pollinations API key not configured" in str(exc):
-                self.print_error(f"Pollinations API key not configured. Please run /api-pollinations to authenticate.")
-            # Check if we're using a Pollinations model and the error suggests API key issue
-            elif self.model in self.pollinations_client.list_models_whitelisted():
-                # Check if the error indicates API key or connectivity issues
-                error_str = str(exc).lower()
-                if "api key" in error_str or "authentication" in error_str or "unauthorized" in error_str:
+            # Check if we're using a Pollinations model and API key is not configured
+            if self.model in self.pollinations_client.list_models_whitelisted():
+                pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
+                if not pollinations_configured:
                     self.print_error(f"Pollinations API key not configured. Please run /api-pollinations to authenticate.")
                 else:
+                    # If API key is configured but there's still an error, show the actual error
                     self.print_error(f"Model call failed: {exc}")
             else:
+                # For Ollama models, show the standard error
                 self.print_error(f"Model call failed: {exc}")
 
 
