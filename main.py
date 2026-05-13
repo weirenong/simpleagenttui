@@ -2303,10 +2303,17 @@ class SimpleAgentTUI(TuiFormatter):
         if self.model in self.pollinations_client.list_models_whitelisted():
             normalized_response_stream = response_stream
         else:
-            normalized_response_stream = (
-                chunk.get("message", {}).get("content", "")
-                for chunk in response_stream
-            )
+            # For Ollama, the response stream yields dictionaries with message content
+            # But sometimes it can yield raw strings, so we need to handle both cases
+            def normalize_ollama_stream(stream):
+                for chunk in stream:
+                    if isinstance(chunk, dict):
+                        yield chunk.get("message", {}).get("content", "")
+                    else:
+                        # Handle case where chunk is already a string
+                        yield chunk
+            
+            normalized_response_stream = normalize_ollama_stream(response_stream)
         
         self.is_streaming_response = True
 
