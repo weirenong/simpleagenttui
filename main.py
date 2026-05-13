@@ -2332,14 +2332,10 @@ class SimpleAgentTUI(TuiFormatter):
                     thinking=True,  # Enable thinking for Pollinations models
                 )
             except Exception as e:
-                # If Pollinations API fails, fallback to Ollama
+                # If Pollinations API fails, we should not fall back to Ollama for Pollinations models
+                # Instead, we should report the error properly
                 self.print_error(f"Pollinations API error: {e}")
-                self.print_dim("Falling back to Ollama...")
-                response_stream = self.client.chat(
-                    chat_messages,
-                    stream=True,
-                    model=self.model,
-                )
+                raise  # Re-raise the exception instead of falling back to Ollama
         else:
             response_stream = self.client.chat(
                 chat_messages,
