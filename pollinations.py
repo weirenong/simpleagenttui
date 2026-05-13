@@ -80,6 +80,8 @@ class PollinationsClient:
     def _stream_chat_chunks(self, response):
         """Yield streaming chunks from Pollinations API."""
 
+        full_response = ""
+        
         try:
             for line in response.iter_lines(decode_unicode=True):
                 if not line:
@@ -120,6 +122,7 @@ class PollinationsClient:
                 content = delta.get("content")
 
                 if content:
+                    full_response += content
                     yield content
 
                 if choice.get("finish_reason") == "stop":
@@ -128,9 +131,6 @@ class PollinationsClient:
         except requests.exceptions.RequestException as e:
             raise Exception(f"Pollinations API request failed: {e}")
                         
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Pollinations API request failed: {e}")
-            
         # Return the complete response structure
         return {
             "choices": [{
