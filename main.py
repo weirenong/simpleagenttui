@@ -1232,7 +1232,12 @@ class SimpleAgentTUI(TuiFormatter):
         memory_text = f"{role}: {content}"
 
         # Check if this is a Pollinations embedding model
-        if self.embedding_model in self.pollinations_client.list_models_whitelisted():
+        # Handle both "pollinations/openai-3-small" and "openai-3-small" formats
+        embedding_model_name = self.embedding_model
+        if embedding_model_name.startswith("pollinations/"):
+            embedding_model_name = embedding_model_name.split("/", 1)[1]
+        
+        if embedding_model_name in self.pollinations_client.list_models_whitelisted():
             # Use Pollinations client for embeddings
             try:
                 embedding = self.pollinations_client.create_embeddings(memory_text)
@@ -3142,7 +3147,12 @@ class SimpleAgentTUI(TuiFormatter):
         self.print_dim(f"Reading attachment: {path.name}")
 
         # Check if this is a Pollinations embedding model
-        if self.embedding_model in self.pollinations_client.list_models_whitelisted():
+        # Handle both "pollinations/openai-3-small" and "openai-3-small" formats
+        embedding_model_name = self.embedding_model
+        if embedding_model_name.startswith("pollinations/"):
+            embedding_model_name = embedding_model_name.split("/", 1)[1]
+        
+        if embedding_model_name in self.pollinations_client.list_models_whitelisted():
             # For Pollinations models, we need to handle embedding differently
             try:
                 # First get the text content
@@ -3184,7 +3194,12 @@ class SimpleAgentTUI(TuiFormatter):
             try:
                 # Check if we need to use Ollama client for vision model too
                 vision_model_to_use = None
-                if self.vision_model in self.pollinations_client.list_models_whitelisted():
+                # Handle both "pollinations/mistral" and "mistral" formats for vision model
+                vision_model_name = self.vision_model
+                if vision_model_name.startswith("pollinations/"):
+                    vision_model_name = vision_model_name.split("/", 1)[1]
+                
+                if vision_model_name in self.pollinations_client.list_models_whitelisted():
                     # For Pollinations vision models, we don't use Ollama client for vision
                     pass
                 else:
@@ -3440,7 +3455,12 @@ class SimpleAgentTUI(TuiFormatter):
     def set_embedding_model(self, model: str, persist: bool = True) -> None:
         self.embedding_model = model
         # Check if this is a Pollinations model
-        if model in self.pollinations_client.list_models_whitelisted():
+        # Handle both "pollinations/openai-3-small" and "openai-3-small" formats
+        model_name = model
+        if model_name.startswith("pollinations/"):
+            model_name = model_name.split("/", 1)[1]
+        
+        if model_name in self.pollinations_client.list_models_whitelisted():
             self.embedding_model_num_context = None
         else:
             self.embedding_model_num_context = self.get_ollama_model_num_context(model)
@@ -3459,7 +3479,12 @@ class SimpleAgentTUI(TuiFormatter):
     def set_vision_model(self, model: str, persist: bool = True) -> None:
         self.vision_model = model
         # Check if this is a Pollinations model
-        if model in self.pollinations_client.list_models_whitelisted():
+        # Handle both "pollinations/mistral" and "mistral" formats
+        model_name = model
+        if model_name.startswith("pollinations/"):
+            model_name = model_name.split("/", 1)[1]
+        
+        if model_name in self.pollinations_client.list_models_whitelisted():
             self.vision_model_num_context = None
         else:
             self.vision_model_num_context = self.get_ollama_model_num_context(model)
@@ -3804,7 +3829,12 @@ class SimpleAgentTUI(TuiFormatter):
             return None
 
         # Check if this is a Pollinations model - if so, return None since Pollinations models don't have context lengths
-        if model in self.pollinations_client.list_models_whitelisted():
+        # Handle both "pollinations/mistral" and "mistral" formats
+        model_name = model
+        if model_name.startswith("pollinations/"):
+            model_name = model_name.split("/", 1)[1]
+        
+        if model_name in self.pollinations_client.list_models_whitelisted():
             return None
 
         try:
