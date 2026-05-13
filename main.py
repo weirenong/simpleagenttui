@@ -3535,46 +3535,36 @@ class SimpleAgentTUI(TuiFormatter):
         print()
 
     def show_response_debug(self) -> None:
-        # Store raw responses from model calls for debugging purposes
-        # This would require tracking raw responses in a separate variable
-        # For now, let's show the workflow debug as a placeholder
-        # In a real implementation, we'd need to track raw responses from model calls
-        
-        if not self.last_workflow_messages:
-            print()
-            self.print_dim("No workflow prompt has been built yet.")
-            self.print_dim("Send a normal prompt first, then run /response-debug.")
+        print()
+        print(self.bold("Raw model responses from last interaction"))
+        print(self.dim(f"Model: {self.model}"))
+        print(self.dim(f"Total raw responses: {len(self.raw_model_responses)}"))
+        print()
+
+        if not self.raw_model_responses:
+            self.print_dim("No raw model responses available.")
+            self.print_dim("Run a prompt first to capture raw responses.")
             print()
             return
 
-        print()
-        print(self.bold("Raw unprocessed messages from all models since user prompt"))
-        print(self.dim(f"Persona: {self.active_persona.lower()}"))
-        print(self.dim(f"Workflow: {self.persona_workflows.get(self.active_persona, DEFAULT_WORKFLOW_NAME)}"))
-        print(self.dim(f"Messages: {len(self.last_workflow_messages)}"))
-        print()
-
-        # Group messages by model (assuming we track model information somewhere)
-        # For now, we'll just show all messages with model info if available
-        
-        for index, message in enumerate(self.last_workflow_messages, start=1):
-            role = str(message.get("role") or "unknown")
-            content = str(message.get("content") or "")
-            token_estimate = self.estimate_text_tokens(content)
-
-            # Try to determine which model was used for this message
-            model_info = ""
-            if role == "assistant":
-                model_info = f" (model: {self.model})"
-            
-            print(self.blue(f"[{index:02d}] {role}{model_info} · ~{token_estimate:,} token(s)"))
+        # Show raw responses
+        for index, response in enumerate(self.raw_model_responses, start=1):
+            print(self.blue(f"[{index:02d}] Raw Response"))
             print(self.dim("-" * 88))
-
-            if content:
-                print(content)
+            
+            # Pretty print the response
+            if isinstance(response, dict):
+                # Pretty print dictionary responses
+                try:
+                    import json
+                    pretty_json = json.dumps(response, indent=2, ensure_ascii=False)
+                    print(pretty_json)
+                except:
+                    print(str(response))
             else:
-                self.print_dim("<empty>")
-
+                # Print string responses
+                print(str(response))
+            
             print(self.dim("-" * 88))
             print()
 
