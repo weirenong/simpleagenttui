@@ -3649,25 +3649,37 @@ class SimpleAgentTUI(TuiFormatter):
             return
 
         # Show raw responses
-        for index, response in enumerate(self.raw_model_responses, start=1):
-            print(self.blue(f"[{index:02d}] Raw Response"))
-            print(self.dim("-" * 88))
-            
-            # Pretty print the response
-            if isinstance(response, dict):
-                # Pretty print dictionary responses
-                try:
-                    import json
-                    pretty_json = json.dumps(response, indent=2, ensure_ascii=False)
-                    print(pretty_json)
-                except:
+        # Combine all responses into one for better viewing
+        combined_response = "".join(str(r) for r in self.raw_model_responses)
+        
+        print(self.blue("[01] Combined Raw Response"))
+        print(self.dim("-" * 88))
+        print(combined_response)
+        print(self.dim("-" * 88))
+        print()
+        
+        # Also show individual responses if there are multiple
+        if len(self.raw_model_responses) > 1:
+            print(self.blue("Individual Responses:"))
+            for index, response in enumerate(self.raw_model_responses, start=1):
+                print(self.blue(f"[{index:02d}] Raw Response"))
+                print(self.dim("-" * 88))
+                
+                # Pretty print the response
+                if isinstance(response, dict):
+                    # Pretty print dictionary responses
+                    try:
+                        import json
+                        pretty_json = json.dumps(response, indent=2, ensure_ascii=False)
+                        print(pretty_json)
+                    except:
+                        print(str(response))
+                else:
+                    # Print string responses
                     print(str(response))
-            else:
-                # Print string responses
-                print(str(response))
-            
-            print(self.dim("-" * 88))
-            print()
+                
+                print(self.dim("-" * 88))
+                print()
 
     def show_workflow_debug(self) -> None:
         if not self.last_workflow_messages:
