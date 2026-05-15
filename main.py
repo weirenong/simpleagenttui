@@ -534,7 +534,6 @@ class SimpleAgentTUI(TuiFormatter):
         self.next_input_prefill: str = ""
         self.last_thinking: str = ""
         self.last_visible_reply: str = ""
-        self.show_thinking: bool = False
         self.format_agent_replies: bool = bool(self.config.get("format_agent_replies", True))
         self.is_streaming_response: bool = False
         self.loading_active: bool = False
@@ -574,11 +573,6 @@ class SimpleAgentTUI(TuiFormatter):
         @self.key_bindings.add("escape", "enter")
         def _(event):
             event.current_buffer.insert_text("\n")
-
-        @self.key_bindings.add("f1")
-        def _(event):
-            run_in_terminal(self.toggle_thinking)
-            event.app.invalidate()
 
         @self.key_bindings.add("escape")
         def clear_slash_command(event) -> None:
@@ -2402,8 +2396,6 @@ class SimpleAgentTUI(TuiFormatter):
         thinking_text = ""
         reply_text = ""
         self.reset_streaming_reply_buffer()
-        previous_show_thinking = self.show_thinking
-        self.show_thinking = False
         self.streaming_thinking_line_count = 0
         self.streaming_thinking_last_block = ""
         self.streaming_thinking_closed = False
@@ -2507,18 +2499,12 @@ class SimpleAgentTUI(TuiFormatter):
                     end_index = lower_pending.find(STREAM_THINK_END)
 
                     if end_index == -1:
-                        previous_thinking = thinking_text
                         thinking_text += pending
-                        self.render_streaming_thinking(previous_thinking, thinking_text)
                         pending = ""
                         break
 
                     thinking_fragment = pending[:end_index]
-                    previous_thinking = thinking_text
                     thinking_text += thinking_fragment
-                    self.render_streaming_thinking(previous_thinking, thinking_text)
-                    #self.finish_streaming_thinking_display(thinking_text)
-
                     pending = pending[end_index + len(STREAM_THINK_END):]
                     in_thinking = False
                     continue
@@ -2561,8 +2547,6 @@ class SimpleAgentTUI(TuiFormatter):
                     reply_text += visible_text
 
                 if not thinking_started:
-                    #print(self.dim("Thinking (streaming)"))
-                    #print(self.dim("-" * 48))
                     thinking_started = True
 
                 pending = pending[start_index + len(STREAM_THINK_START):]
@@ -2571,9 +2555,7 @@ class SimpleAgentTUI(TuiFormatter):
 
         if pending:
             if in_thinking:
-                previous_thinking = thinking_text
                 thinking_text += pending
-                self.render_streaming_thinking(previous_thinking, thinking_text)
             else:
                 self.print_streaming_reply_text(pending)
                 reply_text += pending
@@ -2587,13 +2569,12 @@ class SimpleAgentTUI(TuiFormatter):
 
         if thinking:
             self.last_thinking = thinking
-            self.show_thinking = False
             self.last_visible_reply = visible_reply
         else:
-            self.show_thinking = previous_show_thinking
+            self.last_thinking = ""
+            self.last_visible_reply = visible_reply
 
         if thinking_started and not self.streaming_thinking_closed:
-            #print(self.dim("-" * 48))
             self.streaming_thinking_line_count = 0
             self.streaming_thinking_last_block = ""
             self.streaming_thinking_closed = True
@@ -2632,27 +2613,10 @@ class SimpleAgentTUI(TuiFormatter):
         if not current_block:
             return
 
-        if current_block == self.streaming_thinking_last_block:
-            return
-
-        self.clear_streaming_thinking_block()
         sys.stdout.write(self.dim(current_block))
         sys.stdout.write("\n")
         sys.stdout.flush()
 
-        self.streaming_thinking_last_block = current_block
-        self.streaming_thinking_line_count = self.get_visual_line_count(current_block)
-
-    def clear_streaming_thinking_block(self) -> None:
-        line_count = getattr(self, "streaming_thinking_line_count", 0)
-
-        if line_count <= 0:
-            return
-
-        for _ in range(line_count):
-            sys.stdout.write("\033[1A\r\033[2K")
-
-        sys.stdout.flush()
 
     def finish_streaming_thinking_display(self, thinking_text: str) -> None:
         if getattr(self, "streaming_thinking_closed", False):
@@ -2661,16 +2625,11 @@ class SimpleAgentTUI(TuiFormatter):
         current_block = self.build_streaming_thinking_block(thinking_text)
 
         if current_block and current_block != self.streaming_thinking_last_block:
-            self.clear_streaming_thinking_block()
             sys.stdout.write(self.dim(current_block))
             sys.stdout.write("\n")
             self.streaming_thinking_last_block = current_block
-            self.streaming_thinking_line_count = current_block.count("\n") + 1
 
-        #sys.stdout.write(self.dim("-" * 48) + "\n")
         sys.stdout.flush()
-        self.streaming_thinking_line_count = 0
-        self.streaming_thinking_last_block = ""
         self.streaming_thinking_closed = True
 
     def build_thinking_display_text(self, thinking: str) -> str:
@@ -2679,28 +2638,12 @@ class SimpleAgentTUI(TuiFormatter):
         if not thinking:
             return ""
 
-        words = re.findall(r"\S+", thinking)
-        collapse_word_limit = 45
-
-        if len(words) > collapse_word_limit and not self.show_thinking:
-            preview = " ".join(words[:collapse_word_limit])
-            hidden_word_count = len(words[collapse_word_limit:])
-            return f"{preview}\n+ {hidden_word_count} more word(s) (F1 to expand)"
-
         return thinking
 
     def build_streaming_thinking_block(self, thinking_text: str) -> str:
         thinking = self.normalise_thinking_text(thinking_text)
         return self.build_thinking_display_text(thinking)
 
-    def get_hidden_thinking_word_count(self, thinking: str) -> int:
-        words = re.findall(r"\S+", thinking.strip())
-        collapse_word_limit = 45
-
-        if len(words) <= collapse_word_limit:
-            return 0
-
-        return len(words[collapse_word_limit:])
 
     def extract_and_store_thinking(self, raw_reply: str) -> str:
         thinking_matches = [
@@ -2714,10 +2657,8 @@ class SimpleAgentTUI(TuiFormatter):
 
         if thinking_text:
             self.last_thinking = thinking_text
-            self.show_thinking = False
         else:
             self.last_thinking = ""
-            self.show_thinking = False
 
         return visible_reply
 
@@ -2747,36 +2688,6 @@ class SimpleAgentTUI(TuiFormatter):
         if display_text:
             print(self.dim(display_text))
 
-    def toggle_thinking(self) -> None:
-        if not self.last_thinking:
-            return
-
-        self.show_thinking = not self.show_thinking
-
-        # Check connectivity
-        pollinations_configured = bool(os.getenv("POLLINATIONS_API_KEY") or self.config.get("pollinations_api_key"))
-        ollama_available = self.client.is_available()
-        
-        self.clear_screen()
-        self.show_landing_page()
-        self.print_info(f"Workspace: {self.workspace_dir}")
-        if pollinations_configured:
-            self.print_info("Pollinations: Ready")
-        else:
-            self.print_info("Pollinations: Not Configured")
-        if ollama_available:
-            self.print_info("Ollama: Ready")
-        else:
-            self.print_info("Ollama: Unavailable")
-        self.print_info(f"Model: {self.model}{self.format_num_context(self.model_num_context)}")
-        self.print_info(f"Embedding: {self.embedding_model}{self.format_num_context(self.embedding_model_num_context)}")
-        self.print_info(f"Vision: {self.vision_model}{self.format_num_context(self.vision_model_num_context)}")
-        self.print_dim("Type /help for commands. F1 to collapse/expand thinking. Type /exit to quit.\n")
-
-        self.print_agent_header()
-        self.print_model_reply(self.last_visible_reply)
-        print()
-        print()
 
     def build_system_prompt(self) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
