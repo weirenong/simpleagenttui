@@ -2912,7 +2912,6 @@ class SimpleAgentTUI(TuiFormatter):
         self.last_workflow_messages.clear()
         self.last_thinking = ""
         self.last_visible_reply = ""
-        self.show_thinking = False
         self.streaming_thinking_line_count = 0
         self.streaming_thinking_last_block = ""
         self.streaming_thinking_closed = True
