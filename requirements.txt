@@ -7,3 +7,4 @@ pillow
 pypdf
 openpyxl
 langchain-text-splitters
+termaid

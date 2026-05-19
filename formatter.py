@@ -111,7 +111,6 @@ class TuiFormatter:
                 print(rendered)
                 # Also print the original code block
                 print()
-                print(self.dim("Original code:"))
                 width = self.safe_terminal_width()
                 label = f" code: {language} " if language else " code "
                 border_width = max(8, width - 2)
