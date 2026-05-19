@@ -73,6 +73,7 @@ DEFAULT_WORKFLOW_NAME = "default"
 DEFAULT_PERSONA_WORKFLOWS = {
     "Default": "default",
     "Coding": "coding",
+    "Diagram": "diagram",
 }
 
 TEMP_DIR = CONFIG_DIR / "temp"
@@ -425,9 +426,15 @@ You are SimpleAgent, a precise coding assistant. Follow instructions exactly. Ne
 Limit your internal reasoning to under 2000 words.
 """.strip()
 
+DEFAULT_DIAGRAM_PERSONA_PROMPT = """
+You are SimpleAgent, a diagram generation assistant. Generate clear, structured diagrams in Mermaid format.
+Limit your internal reasoning to under 2000 words.
+""".strip()
+
 DEFAULT_PERSONAS = {
     "Default": DEFAULT_PERSONA_PROMPT,
     "Coding": DEFAULT_CODING_PERSONA_PROMPT,
+    "Diagram": DEFAULT_DIAGRAM_PERSONA_PROMPT,
 }
 
 
