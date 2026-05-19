@@ -7,12 +7,11 @@ packages = ["."]
 
 [project]
 name = "weirenong-simpleagent"
-version = "0.2.7"
+version = "0.2.8"
 description = "Tiny local AI agent for edge devices, built to make small models useful with workflows, personas, file/web context, and safe tool-like actions."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "prompt-toolkit",
     "prompt-toolkit",
     "wcwidth",
     "playwright",
@@ -21,7 +20,8 @@ dependencies = [
     "pillow",
     "pypdf",
     "openpyxl",
-    "langchain-text-splitters"
+    "langchain-text-splitters",
+    "termaid"
 ]
 
 [project.scripts]

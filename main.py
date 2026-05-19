@@ -47,7 +47,7 @@ from pollinations import PollinationsClient, PollinationsConfig
 
 from PIL import Image, ImageGrab
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 APP_NAME = "SimpleAgent"
 DEFAULT_MODEL = "pollinations/qwen-coder"
 DEFAULT_EMBEDDING_MODEL = "pollinations/openai-3-small"
