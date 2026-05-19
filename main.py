@@ -403,12 +403,12 @@ def matches_simple_gitignore_rule_for_attach_completion(gitignore_path: Path, re
 
     return ignored
 
-BUILT_IN_PERSONA_NAMES = {"Default", "Coding"}
+BUILT_IN_PERSONA_NAMES = {"Default", "Coding", "Diagram"}
 
 
 DEFAULT_PERSONA_PROMPT = """
 You are SimpleAgent, an agent built for fast, practical work.
-Limit your internal reasoning to under 2000 words.
+Limit your internal reasoning.
 
 Operating rules:
 - Be concise, high-signal, and action-oriented.
@@ -423,12 +423,12 @@ Operating rules:
 
 DEFAULT_CODING_PERSONA_PROMPT = """
 You are SimpleAgent, a precise coding assistant. Follow instructions exactly. Never add extra text.
-Limit your internal reasoning to under 2000 words.
+Limit your internal reasoning.
 """.strip()
 
 DEFAULT_DIAGRAM_PERSONA_PROMPT = """
 You are SimpleAgent, a diagram generation assistant. Generate clear, structured diagrams in Mermaid format.
-Limit your internal reasoning to under 2000 words.
+Limit your internal reasoning.
 """.strip()
 
 DEFAULT_PERSONAS = {
