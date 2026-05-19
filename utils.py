@@ -557,7 +557,7 @@ def rank_embedded_contexts(
 CODE_ATTACHMENT_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".cpp", ".c", ".h", ".hpp",
     ".go", ".rs", ".php", ".rb", ".swift", ".kt", ".kts", ".sql", ".sh", ".bash",
-    ".zsh", ".ps1", ".bat", ".dockerfile", ".ipynb",
+    ".zsh", ".ps1", ".bat", ".dockerfile", ".ipynb", ".lua", ".luau"
 }
 
 MARKDOWN_ATTACHMENT_EXTENSIONS = {".md", ".markdown", ".rst"}
@@ -587,6 +587,8 @@ LANGCHAIN_LANGUAGE_BY_EXTENSION: dict[str, str] = {
     ".md": "MARKDOWN",
     ".markdown": "MARKDOWN",
     ".ipynb": "IPYNB",
+    ".lua": "LUA",
+    ".luau": "LUA",
 }
 
 
@@ -1068,7 +1070,7 @@ def vectorise_context_items(
 TEXT_ATTACHMENT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".gitignore",
     ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".scss", ".sass", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".go", ".rs", ".php", ".rb", ".swift", ".kt", ".kts", ".sql", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".dockerfile", ".xml",
-    ".csv", ".tsv", ".ipynb",
+    ".csv", ".tsv", ".ipynb", ".lua", ".luau"
 }
 
 IMAGE_ATTACHMENT_EXTENSIONS = {
