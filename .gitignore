@@ -1,0 +1,182 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*.swm
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows thumbnail cache files
+Thumbs.db
+Thumbs.db:encryptable
+
+# OLLAMA
+ollama_config.json
+ollama_state.json
+ollama_logs/
+ollama_models/
+ollama_cache/
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Virtual environments
+.env
+.venv
+venv/
+
+# Log files
+*.log
+
+# Configuration files
+*.cfg
+*.conf
+*.ini
+
+# Data files
+*.csv
+*.json
+*.xml
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+hello.py
+
+# Docker
+Dockerfile
+.dockerignore
+.docker/
+
+# Git
+.git/
+.gitattributes
+
+# Other
+*.bak
+*.swp
+*.swo
+*.swn
+*.swm
+CLAUDE.md
+
+# Environment variables
+.env
+.env.local
+
+# IDE settings
+.idea/
+.vscode/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+.Spotlight-V100
+.Trashes
+
+# Build output
+dist/
+build/
+*.egg-info/
+
+# Coverage
+.coverage
+.coverage.*
+
+# IDE specific files
+*.iml
+*.ipr
+*.iws
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+
+# Database
+*.sqlite
+
+# Cache
+.cache
+.aider*

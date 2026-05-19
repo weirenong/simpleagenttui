@@ -557,7 +557,7 @@ def rank_embedded_contexts(
 CODE_ATTACHMENT_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".cpp", ".c", ".h", ".hpp",
     ".go", ".rs", ".php", ".rb", ".swift", ".kt", ".kts", ".sql", ".sh", ".bash",
-    ".zsh", ".ps1", ".bat", ".dockerfile",
+    ".zsh", ".ps1", ".bat", ".dockerfile", ".ipynb",
 }
 
 MARKDOWN_ATTACHMENT_EXTENSIONS = {".md", ".markdown", ".rst"}
@@ -586,6 +586,7 @@ LANGCHAIN_LANGUAGE_BY_EXTENSION: dict[str, str] = {
     ".htm": "HTML",
     ".md": "MARKDOWN",
     ".markdown": "MARKDOWN",
+    ".ipynb": "IPYNB",
 }
 
 
@@ -1067,7 +1068,7 @@ def vectorise_context_items(
 TEXT_ATTACHMENT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".gitignore",
     ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".scss", ".sass", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".go", ".rs", ".php", ".rb", ".swift", ".kt", ".kts", ".sql", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".dockerfile", ".xml",
-    ".csv", ".tsv",
+    ".csv", ".tsv", ".ipynb",
 }
 
 IMAGE_ATTACHMENT_EXTENSIONS = {
