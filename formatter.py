@@ -4,6 +4,11 @@ from __future__ import annotations
 import os
 import re
 
+try:
+    import termaid
+except ImportError:
+    termaid = None
+
 class TuiFormatter:
     # -----------------------------
     # Text styling
@@ -97,6 +102,18 @@ class TuiFormatter:
         return closing_indexes[-1]
 
     def print_tui_code_block(self, code_lines: list[str], language: str = "") -> None:
+        # Try to render as Mermaid diagram if termaid is available and language is mermaid
+        if termaid and language.lower() in ('mermaid', 'mmd'):
+            try:
+                # Join the code lines and render as Mermaid
+                code_text = '\n'.join(code_lines)
+                rendered = termaid.render(code_text)
+                print(rendered)
+                return
+            except Exception:
+                # Fall back to regular code block rendering if termaid fails
+                pass
+
         width = self.safe_terminal_width()
         label = f" code: {language} " if language else " code "
         border_width = max(8, width - 2)
