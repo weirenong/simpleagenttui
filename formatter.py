@@ -109,6 +109,27 @@ class TuiFormatter:
                 code_text = '\n'.join(code_lines)
                 rendered = termaid.render(code_text)
                 print(rendered)
+                # Also print the original code block
+                print()
+                print(self.dim("Original code:"))
+                width = self.safe_terminal_width()
+                label = f" code: {language} " if language else " code "
+                border_width = max(8, width - 2)
+                top = "╭" + label + "─" * max(0, border_width - len(label)) + "╮"
+                bottom = "╰" + "─" * border_width + "╯"
+                print(self.dim(top))
+                print()
+                if not code_lines:
+                    print("")
+                else:
+                    is_diff_block = self.is_diff_language(language)
+                    for code_line in code_lines:
+                        if is_diff_block:
+                            print(self.format_diff_line(code_line))
+                        else:
+                            print(self.colour(code_line, "97"))
+                print()
+                print(self.dim(bottom))
                 return
             except Exception:
                 # Fall back to regular code block rendering if termaid fails
